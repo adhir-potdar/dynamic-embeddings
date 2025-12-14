@@ -355,7 +355,7 @@ structure_metrics = {
 **Built-in Configurations**:
 - **default.json**: Base patterns for general JSON
 - **analytics.json**: Performance metrics and analytics
-- **advertising.json**: Yield management and advertising
+- **advertising.json**: Ad-tech analytics and advertising
 - **business.json**: Business entities and processes
 - **ecommerce.json**: E-commerce and retail
 - **configuration.json**: System configuration patterns

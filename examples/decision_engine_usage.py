@@ -79,7 +79,7 @@ def demonstrate_decision_engine():
     print(f"   Reasoning: {details['reasoning']}")
     print()
 
-    # Example 3: Analytics/yield management document
+    # Example 3: Ad-Tech analytics document
     print("3. Analytics Document (using advertising config):")
     advertising_engine = DecisionEngine(AnalyzerConfig.get_advertising_config())
 

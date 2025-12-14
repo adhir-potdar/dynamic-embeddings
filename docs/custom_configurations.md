@@ -146,7 +146,7 @@ Use the `extends` field to inherit from existing configurations:
 Available base configurations:
 - `default.json` - Basic patterns
 - `analytics.json` - Analytics and metrics
-- `advertising.json` - Advertising and yield management
+- `advertising.json` - Advertising and ad-tech analytics
 - `business.json` - Business entities and processes
 - `ecommerce.json` - E-commerce and retail
 - `configuration.json` - System configuration data

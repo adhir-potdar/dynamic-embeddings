@@ -28,7 +28,7 @@ class AnalyzerConfig:
 
     @classmethod
     def get_advertising_config(cls) -> Dict[str, Any]:
-        """Load advertising/yield management configuration from external file."""
+        """Load advertising/ad-tech analytics configuration from external file."""
         return cls.load_from_file(cls._CONFIG_DIR / "advertising.json")
 
     @classmethod

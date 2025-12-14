@@ -1,5 +1,5 @@
 {
-  "yield_management_config": {
+  "adtech_analytics_config": {
     "domain_patterns": {
       "advertising": ["ecpm", "cpm", "revenue", "impressions", "fill_rate", "ad_unit"],
       "analytics": ["metric", "analysis", "performance", "trend", "kpi"],

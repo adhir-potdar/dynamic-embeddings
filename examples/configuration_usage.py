@@ -32,7 +32,7 @@ def demonstrate_configuration_usage():
     print()
 
     # Example 3: Advertising configuration (extends analytics)
-    print("3. Advertising/Yield Management Configuration:")
+    print("3. Advertising/Ad-Tech Analytics Configuration:")
     advertising_config = AnalyzerConfig.get_advertising_config()
     print(f"   Domain patterns: {list(advertising_config['domain_patterns'].keys())}")
     print(f"   Advertising metrics: {advertising_config['metric_patterns']['advertising_metrics']}")
@@ -41,8 +41,8 @@ def demonstrate_configuration_usage():
     # Example 4: Using configurations with analyzers
     print("4. Using Configurations with Analyzers:")
 
-    # Sample yield management data
-    sample_yield_data = {
+    # Sample ad-tech analytics data
+    sample_adtech_data = {
         "analysis_metadata": {
             "period1": {"start_date": "2024-01-01", "end_date": "2024-01-02"},
             "period2": {"start_date": "2024-01-03", "end_date": "2024-01-04"}
@@ -59,7 +59,7 @@ def demonstrate_configuration_usage():
 
     # Analyze with advertising config
     analyzer = ContentAnalyzer(advertising_config)
-    result = analyzer.analyze(sample_yield_data)
+    result = analyzer.analyze(sample_adtech_data)
 
     print(f"   Detected domain: {result.domain_type}")
     print(f"   Performance metrics detected: {result.performance_metrics}")

@@ -73,7 +73,7 @@ class EngineConfig(BaseModel):
 
     # Analysis configuration
     analysis_rules: List[str] = Field(
-        default=["size_based", "hierarchy_depth", "performance_metrics", "yield_management"],
+        default=["size_based", "hierarchy_depth", "performance_metrics", "adtech_analytics"],
         description="Enabled analysis rules"
     )
     custom_analyzers: Dict[str, dict] = Field(
@@ -99,8 +99,8 @@ class EngineConfig(BaseModel):
         return v
 
     @classmethod
-    def from_yield_management(cls) -> "EngineConfig":
-        """Create optimized config for yield management analytics."""
+    def from_adtech_analytics(cls) -> "EngineConfig":
+        """Create optimized config for ad-tech analytics."""
         return cls(
             chunking=ChunkingConfig(
                 max_chunk_size_mb=2.0,
@@ -116,7 +116,7 @@ class EngineConfig(BaseModel):
                 "size_based",
                 "hierarchy_depth",
                 "performance_metrics",
-                "yield_management",
+                "adtech_analytics",
                 "drill_down_pattern"
             ]
         )

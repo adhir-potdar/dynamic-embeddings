@@ -1,10 +1,10 @@
 {
-  "description": "Configuration for advertising and yield management data",
+  "description": "Configuration for advertising and ad-tech analytics data",
   "version": "1.0",
   "extends": "analytics.json",
   "domain_patterns": {
     "advertising": ["ad", "advertisement", "campaign", "creative", "placement"],
-    "yield_management": ["yield", "inventory", "monetization", "optimization"],
+    "adtech_analytics": ["yield", "inventory", "monetization", "optimization"],
     "revenue": ["revenue", "earnings", "income", "cpm", "ecpm", "rpm"],
     "traffic": ["traffic", "impressions", "views", "clicks", "sessions"],
     "targeting": ["targeting", "audience", "demographic", "behavioral"],

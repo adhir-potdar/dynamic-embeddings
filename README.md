@@ -123,7 +123,7 @@ JSON Input → Analyzers → Decision Rules → Strategy Selection → Chunking 
 ## Examples
 
 See the `examples/` directory for:
-- Yield management analytics processing
+- Ad-Tech analytics processing
 - Configuration file chunking
 - Business entity extraction
 - Time series data handling
