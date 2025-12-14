@@ -20,7 +20,7 @@ class Settings(BaseSettings):
 
     # OpenAI Configuration
     openai_api_key: str = Field(env="OPENAI_API_KEY")
-    openai_model: str = Field(default="text-embedding-3-large", env="OPENAI_MODEL")
+    openai_model: str = Field(default="text-embedding-3-large", env="OPENAI_EMBEDDING_MODEL")
     openai_max_retries: int = Field(default=3, env="OPENAI_MAX_RETRIES")
     openai_timeout: int = Field(default=60, env="OPENAI_TIMEOUT")
 

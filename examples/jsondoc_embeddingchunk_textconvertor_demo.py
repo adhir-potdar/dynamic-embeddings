@@ -1,7 +1,7 @@
 """
-Phase 1 Embeddings Demo: Complete JSON-to-Embeddings Pipeline
+Document Chunking Demo: Complete JSON-to-Embeddings Pipeline
 
-This example demonstrates the complete Phase 1 implementation:
+This example demonstrates the complete document chunking implementation:
 - Loading JSON documents
 - Automatic strategy selection
 - Text conversion for embeddings
@@ -228,7 +228,7 @@ def demonstrate_transformation_steps():
 
 def demonstrate_basic_processing():
     """Demonstrate basic document processing."""
-    print("\n=== Phase 1 Embeddings Demo: Basic Processing ===\n")
+    print("\n=== Document Chunking Demo: Basic Processing ===\n")
 
     # Create processor with default configuration
     processor = DocumentProcessor(config_name="default")
@@ -415,10 +415,10 @@ def demonstrate_text_conversion_strategies():
 
 
 def main():
-    """Run the complete Phase 1 embeddings demonstration."""
+    """Run the complete document chunking demonstration."""
     setup_logging()
 
-    print("🚀 Dynamic JSON Embeddings - Phase 1 Complete Pipeline Demo")
+    print("🚀 Dynamic JSON Embeddings - Document Chunking Pipeline Demo")
     print("=" * 65)
 
     try:
@@ -433,7 +433,7 @@ def main():
         demonstrate_processing_statistics()
         demonstrate_text_conversion_strategies()
 
-        print("\n✅ Phase 1 demo completed successfully!")
+        print("\n✅ Document chunking demo completed successfully!")
         print("\n📋 What was demonstrated:")
         print("- Automatic chunking strategy selection")
         print("- JSON-to-text conversion for embeddings")
@@ -444,9 +444,9 @@ def main():
         print("- Different text conversion strategies")
 
         print("\n🔄 Next Steps:")
-        print("- Phase 2: Implement actual embedding generation with LangChain")
-        print("- Phase 3: Vector storage with PGVector")
-        print("- Phase 4: Retrieval and query system")
+        print("- Next: Implement vector embedding generation with OpenAI")
+        print("- Next: Vector storage with PGVector")
+        print("- Next: Retrieval and similarity search system")
 
     except Exception as e:
         print(f"❌ Demo failed with error: {e}")

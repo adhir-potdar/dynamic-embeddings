@@ -1,4 +1,4 @@
-"""Main processor orchestrating Phase 1 JSON-to-embeddings pipeline."""
+"""Main processor orchestrating JSON document chunking pipeline."""
 
 import json
 import logging
@@ -12,7 +12,7 @@ from .text_converter import ChunkTextConverter
 
 
 class DocumentProcessor:
-    """Main processor orchestrating Phase 1 JSON-to-embeddings pipeline."""
+    """Main processor orchestrating JSON document chunking pipeline."""
 
     def __init__(self, config_name: str = "default"):
         """Initialize processor with configuration.
@@ -28,14 +28,15 @@ class DocumentProcessor:
         self.min_text_length = 10
         self.min_semantic_density = 0.1
 
-    def process_file(self, file_path: Union[str, Path]) -> List[EmbeddingChunk]:
-        """Process JSON file through complete Phase 1 pipeline.
+    def process_file(self, file_path: Union[str, Path], document_id: str = None) -> Dict[str, Any]:
+        """Process JSON file through complete document chunking pipeline.
 
         Args:
             file_path: Path to JSON file
+            document_id: Optional document identifier
 
         Returns:
-            List of embedding-ready chunks with metadata
+            Dictionary with success status, embedding_chunks, and stats
         """
         file_path = Path(file_path)
 
@@ -46,14 +47,54 @@ class DocumentProcessor:
 
             self.logger.info(f"Processing file: {file_path.name}")
 
-            return self.process_document(json_data, source_file=str(file_path))
+            # Use process_data for consistent interface
+            return self.process_data(json_data, document_id=document_id, source_file=str(file_path))
 
         except Exception as e:
             self.logger.error(f"Failed to process file {file_path}: {e}")
-            raise
+            return {
+                'success': False,
+                'error': str(e),
+                'embedding_chunks': [],
+                'stats': {}
+            }
 
-    def process_document(self, json_data: Dict[str, Any], source_file: Optional[str] = None) -> List[EmbeddingChunk]:
-        """Process JSON document through Phase 1 pipeline.
+    def process_data(self, json_data: Dict[str, Any], document_id: str = None, source_file: Optional[str] = None) -> Dict[str, Any]:
+        """Process JSON data through document chunking pipeline.
+
+        Args:
+            json_data: JSON document to process
+            document_id: Optional document identifier
+            source_file: Optional source file path
+
+        Returns:
+            Dictionary with success status, embedding_chunks, and stats
+        """
+        try:
+            embedding_chunks = self._process_document_internal(json_data, source_file)
+            stats = self.get_processing_stats(embedding_chunks)
+
+            return {
+                'success': True,
+                'embedding_chunks': embedding_chunks,
+                'stats': {
+                    'chunk_strategies': stats.get('strategy_distribution', {}),
+                    'text_conversion_methods': {'contextual_description': len(embedding_chunks)},
+                    'quality_metrics': stats.get('quality_metrics', {})
+                }
+            }
+
+        except Exception as e:
+            self.logger.error(f"Document processing failed: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'embedding_chunks': [],
+                'stats': {}
+            }
+
+    def _process_document_internal(self, json_data: Dict[str, Any], source_file: Optional[str] = None) -> List[EmbeddingChunk]:
+        """Internal method to process JSON document through document chunking pipeline.
 
         Args:
             json_data: JSON document to process
@@ -111,6 +152,18 @@ class DocumentProcessor:
 
         return embedding_chunks
 
+    def process_document(self, json_data: Dict[str, Any], source_file: Optional[str] = None) -> List[EmbeddingChunk]:
+        """Legacy method - process JSON document and return chunks directly.
+
+        Args:
+            json_data: JSON document to process
+            source_file: Optional source file path
+
+        Returns:
+            List of embedding-ready chunks with metadata
+        """
+        return self._process_document_internal(json_data, source_file)
+
     def process_batch(self, file_paths: List[Union[str, Path]]) -> Dict[str, List[EmbeddingChunk]]:
         """Process multiple files in batch.
 
@@ -124,8 +177,12 @@ class DocumentProcessor:
 
         for file_path in file_paths:
             try:
-                chunks = self.process_file(file_path)
-                results[str(file_path)] = chunks
+                result = self.process_file(file_path)
+                if result['success']:
+                    results[str(file_path)] = result['embedding_chunks']
+                else:
+                    self.logger.error(f"Failed to process {file_path}: {result.get('error', 'Unknown error')}")
+                    results[str(file_path)] = []
             except Exception as e:
                 self.logger.error(f"Failed to process {file_path}: {e}")
                 results[str(file_path)] = []
@@ -252,3 +309,17 @@ class DocumentProcessor:
         }
 
         return stats
+
+    def get_processor_info(self) -> Dict[str, Any]:
+        """Get information about the processor configuration.
+
+        Returns:
+            Processor configuration info
+        """
+        return {
+            'config_name': getattr(self.engine, 'config_name', 'default'),
+            'text_conversion_strategy': self.text_converter.strategy,
+            'min_text_length': self.min_text_length,
+            'min_semantic_density': self.min_semantic_density,
+            'available_strategies': ['flat', 'hierarchical', 'semantic', 'dimensional', 'hybrid']
+        }
