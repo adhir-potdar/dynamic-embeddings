@@ -71,7 +71,7 @@ class DocumentProcessor:
             Dictionary with success status, embedding_chunks, and stats
         """
         try:
-            embedding_chunks = self._process_document_internal(json_data, source_file)
+            embedding_chunks = self._process_document_internal(json_data, source_file, document_id)
             stats = self.get_processing_stats(embedding_chunks)
 
             return {
@@ -93,21 +93,24 @@ class DocumentProcessor:
                 'stats': {}
             }
 
-    def _process_document_internal(self, json_data: Dict[str, Any], source_file: Optional[str] = None) -> List[EmbeddingChunk]:
+    def _process_document_internal(self, json_data: Dict[str, Any], source_file: Optional[str] = None, document_id: str = "document") -> List[EmbeddingChunk]:
         """Internal method to process JSON document through document chunking pipeline.
 
         Args:
             json_data: JSON document to process
             source_file: Optional source file path
+            document_id: Document identifier for unique chunk IDs
 
         Returns:
             List of embedding-ready chunks with metadata
         """
         # Step 1: Use existing chunking engine
-        chunks, decision_metadata = self.engine.process_document(json_data)
+        chunks, decision_metadata = self.engine.process_document(json_data, document_id=document_id)
 
-        strategy = decision_metadata.get('chosen_strategy', 'unknown')
-        confidence = decision_metadata.get('confidence', 0.0)
+        # Get strategy from the correct location in metadata
+        strategy = decision_metadata.get('strategy_used', 'unknown')
+        decision_details = decision_metadata.get('decision_details', {})
+        confidence = decision_details.get('confidence', 0.0)
 
         self.logger.info(f"Selected strategy: {strategy} (confidence: {confidence:.2f})")
 
@@ -152,17 +155,18 @@ class DocumentProcessor:
 
         return embedding_chunks
 
-    def process_document(self, json_data: Dict[str, Any], source_file: Optional[str] = None) -> List[EmbeddingChunk]:
+    def process_document(self, json_data: Dict[str, Any], source_file: Optional[str] = None, document_id: str = "document") -> List[EmbeddingChunk]:
         """Legacy method - process JSON document and return chunks directly.
 
         Args:
             json_data: JSON document to process
             source_file: Optional source file path
+            document_id: Document identifier for unique chunk IDs
 
         Returns:
             List of embedding-ready chunks with metadata
         """
-        return self._process_document_internal(json_data, source_file)
+        return self._process_document_internal(json_data, source_file, document_id)
 
     def process_batch(self, file_paths: List[Union[str, Path]]) -> Dict[str, List[EmbeddingChunk]]:
         """Process multiple files in batch.

@@ -10,6 +10,7 @@ from openai import OpenAI
 import os
 from dataclasses import dataclass, asdict
 import time
+import tiktoken
 
 from ..models.embedding_chunk import EmbeddingChunk
 
@@ -123,6 +124,129 @@ class EmbeddingService:
             'last_reset': datetime.utcnow().isoformat()
         }
 
+        # Initialize tokenizer for counting tokens
+        try:
+            self.tokenizer = tiktoken.encoding_for_model(self.model)
+        except KeyError:
+            # Fallback to a default tokenizer if model not recognized
+            self.tokenizer = tiktoken.get_encoding("cl100k_base")
+
+        # Token limits for OpenAI embedding models (configurable via environment)
+        self.max_tokens_per_request = int(os.getenv('MAX_TOKENS_PER_REQUEST', '8000'))
+        self.max_tokens_per_text = int(os.getenv('MAX_TOKENS_PER_TEXT', '7500'))
+
+    def count_tokens(self, text: str) -> int:
+        """Count the number of tokens in a text."""
+        try:
+            return len(self.tokenizer.encode(text))
+        except Exception as e:
+            # Fallback: rough estimation (4 characters per token)
+            self.logger.warning(f"Token counting failed, using estimation: {e}")
+            return len(text) // 4
+
+    def validate_text_length(self, text: str) -> bool:
+        """Check if text is within token limits."""
+        token_count = self.count_tokens(text)
+        return token_count <= self.max_tokens_per_text
+
+    def subdivide_oversized_text(self, text: str) -> List[str]:
+        """Subdivide text that exceeds token limits into smaller chunks."""
+        text_tokens = self.count_tokens(text)
+
+        if text_tokens <= self.max_tokens_per_text:
+            return [text]
+
+        # Calculate how many subdivisions we need
+        num_subdivisions = (text_tokens // self.max_tokens_per_text) + 1
+        self.logger.info(f"Subdividing text with {text_tokens} tokens into {num_subdivisions} smaller chunks")
+
+        # Split text by approximate character count (rough estimation)
+        chars_per_subdivision = len(text) // num_subdivisions
+        subdivisions = []
+
+        for i in range(num_subdivisions):
+            start_idx = i * chars_per_subdivision
+
+            if i == num_subdivisions - 1:
+                # Last subdivision gets remaining text
+                end_idx = len(text)
+            else:
+                end_idx = (i + 1) * chars_per_subdivision
+
+                # Try to split at a reasonable boundary (sentence, word, etc.)
+                # Look for sentence endings first
+                for boundary in ['. ', '.\n', '! ', '?\n', '? ']:
+                    boundary_idx = text.rfind(boundary, start_idx, end_idx + 200)
+                    if boundary_idx > start_idx:
+                        end_idx = boundary_idx + len(boundary)
+                        break
+                else:
+                    # Fall back to word boundaries
+                    boundary_idx = text.rfind(' ', start_idx, end_idx + 50)
+                    if boundary_idx > start_idx:
+                        end_idx = boundary_idx
+
+            subdivision = text[start_idx:end_idx].strip()
+            if subdivision:  # Only add non-empty subdivisions
+                subdivision_tokens = self.count_tokens(subdivision)
+
+                # If still too large, force split by characters (emergency fallback)
+                if subdivision_tokens > self.max_tokens_per_text:
+                    # Rough estimation: 4 chars per token
+                    max_chars = self.max_tokens_per_text * 4
+                    subdivision = subdivision[:max_chars]
+                    self.logger.warning(f"Force-splitting text to {max_chars} chars (~{self.max_tokens_per_text} tokens)")
+
+                subdivisions.append(subdivision)
+
+        self.logger.info(f"Successfully subdivided into {len(subdivisions)} chunks with token counts: {[self.count_tokens(sub) for sub in subdivisions]}")
+        return subdivisions
+
+    def create_token_aware_batches(self, texts: List[str]) -> List[List[str]]:
+        """Create batches that respect token limits, subdividing oversized texts."""
+        # First, process all texts and subdivide any that are too large
+        processed_texts = []
+        for text in texts:
+            subdivisions = self.subdivide_oversized_text(text)
+            processed_texts.extend(subdivisions)
+
+        # Log subdivision results
+        if len(processed_texts) > len(texts):
+            self.logger.info(f"Text subdivision: {len(texts)} original texts → {len(processed_texts)} processed texts")
+
+        # Now create batches with the processed texts
+        batches = []
+        current_batch = []
+        current_tokens = 0
+
+        for text in processed_texts:
+            text_tokens = self.count_tokens(text)
+
+            # Check if text is still too large after subdivision
+            if text_tokens > self.max_tokens_per_text:
+                self.logger.error(f"Text still too large after subdivision: {text_tokens} tokens - skipping this chunk")
+                continue  # Skip this chunk and continue with others
+
+            # If adding this text would exceed the batch limit, start a new batch
+            if current_tokens + text_tokens > self.max_tokens_per_request:
+                if current_batch:
+                    batches.append(current_batch)
+                    current_batch = [text]
+                    current_tokens = text_tokens
+                else:
+                    # Edge case: single text that's close to the limit
+                    batches.append([text])
+                    current_tokens = 0
+            else:
+                current_batch.append(text)
+                current_tokens += text_tokens
+
+        # Add the last batch if it has content
+        if current_batch:
+            batches.append(current_batch)
+
+        return batches
+
     def generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for a single text.
 
@@ -135,7 +259,7 @@ class EmbeddingService:
         return self.generate_embeddings([text])[0]
 
     def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings for multiple texts.
+        """Generate embeddings for multiple texts with token-aware batching.
 
         Args:
             texts: List of texts to embed
@@ -148,9 +272,15 @@ class EmbeddingService:
 
         embeddings = []
 
-        # Process in batches
-        for i in range(0, len(texts), self.batch_size):
-            batch = texts[i:i + self.batch_size]
+        # Create token-aware batches instead of fixed-size batches
+        token_batches = self.create_token_aware_batches(texts)
+
+        self.logger.info(f"Processing {len(texts)} texts in {len(token_batches)} token-aware batches")
+
+        for batch_idx, batch in enumerate(token_batches, 1):
+            total_tokens = sum(self.count_tokens(text) for text in batch)
+            self.logger.debug(f"Processing batch {batch_idx}/{len(token_batches)}: {len(batch)} texts, {total_tokens} tokens")
+
             batch_embeddings = self._generate_batch_embeddings(batch)
             embeddings.extend(batch_embeddings)
 
@@ -285,15 +415,34 @@ class EmbeddingService:
 
         self.logger.info(f"Generating embeddings for {len(chunks)} chunks")
 
-        # Extract texts for batch processing
-        texts = [chunk.text for chunk in chunks]
+        # Filter out chunks that are too large before processing
+        valid_chunks = []
+        skipped_chunks = []
+
+        for chunk in chunks:
+            token_count = self.count_tokens(chunk.text)
+            if token_count <= self.max_tokens_per_text:
+                valid_chunks.append(chunk)
+            else:
+                skipped_chunks.append(chunk)
+                self.logger.warning(f"Skipping chunk {chunk.chunk_id}: {token_count} tokens exceeds limit of {self.max_tokens_per_text}")
+
+        if skipped_chunks:
+            self.logger.warning(f"Skipped {len(skipped_chunks)} chunks due to token limits. Processing {len(valid_chunks)} valid chunks.")
+
+        if not valid_chunks:
+            self.logger.warning("No valid chunks to process after filtering")
+            return []
+
+        # Extract texts for batch processing (only from valid chunks)
+        texts = [chunk.text for chunk in valid_chunks]
 
         # Generate embeddings in batches
         embedding_vectors = self.generate_embeddings(texts)
 
         # Create VectorEmbedding objects
         vector_embeddings = []
-        for chunk, embedding_vector in zip(chunks, embedding_vectors):
+        for chunk, embedding_vector in zip(valid_chunks, embedding_vectors):
             vector_embedding = VectorEmbedding(
                 # Vector Data
                 embedding=embedding_vector,
@@ -333,6 +482,142 @@ class EmbeddingService:
         self.logger.info(f"Successfully generated {len(vector_embeddings)} vector embeddings")
 
         return vector_embeddings
+
+    def embed_chunks_streaming(
+        self,
+        chunks: List[EmbeddingChunk],
+        vector_store,
+        collection_name: str = "default",
+        document_id: str = "document",
+        buffer_size: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Convert EmbeddingChunks to VectorEmbeddings with streaming storage.
+
+        This method processes chunks in batches and stores embeddings immediately,
+        avoiding memory accumulation for large datasets.
+
+        Args:
+            chunks: List of EmbeddingChunks from document chunking
+            vector_store: VectorStore instance for immediate storage
+            collection_name: Collection to store in
+            document_id: Document identifier
+            buffer_size: Number of embeddings to buffer before flushing (defaults to env var)
+
+        Returns:
+            Dictionary with processing statistics and database IDs
+        """
+        if not chunks:
+            return {
+                'total_processed': 0,
+                'total_stored': 0,
+                'database_ids': [],
+                'batches_processed': 0
+            }
+
+        # Get buffer size from environment or parameter
+        if buffer_size is None:
+            buffer_size = int(os.getenv('EMBEDDING_BUFFER_SIZE', '100'))
+
+        self.logger.info(f"Streaming embeddings for {len(chunks)} chunks with buffer size {buffer_size}")
+
+        database_ids = []
+        total_stored = 0
+        batch_count = 0
+        current_buffer = []
+
+        # Process chunks in streaming fashion
+        for i in range(0, len(chunks), buffer_size):
+            batch_chunks = chunks[i:i + buffer_size]
+            batch_count += 1
+
+            self.logger.info(f"Processing batch {batch_count}: {len(batch_chunks)} chunks (total progress: {i + len(batch_chunks)}/{len(chunks)})")
+
+            # Filter out chunks that are too large before processing
+            valid_batch_chunks = []
+            for chunk in batch_chunks:
+                token_count = self.count_tokens(chunk.text)
+                if token_count <= self.max_tokens_per_text:
+                    valid_batch_chunks.append(chunk)
+                else:
+                    self.logger.warning(f"Skipping chunk {chunk.chunk_id}: {token_count} tokens exceeds limit of {self.max_tokens_per_text}")
+
+            if not valid_batch_chunks:
+                self.logger.warning(f"No valid chunks in batch {batch_count}, skipping")
+                continue
+
+            # Extract texts for this batch (only from valid chunks)
+            texts = [chunk.text for chunk in valid_batch_chunks]
+
+            # Generate embeddings for this batch
+            embedding_vectors = self.generate_embeddings(texts)
+
+            # Create VectorEmbedding objects for this batch
+            batch_vector_embeddings = []
+            for chunk, embedding_vector in zip(valid_batch_chunks, embedding_vectors):
+                vector_embedding = VectorEmbedding(
+                    # Vector Data
+                    embedding=embedding_vector,
+                    embedding_model=self.model,
+                    embedding_created_at=datetime.utcnow().isoformat(),
+
+                    # Content Identity
+                    chunk_id=chunk.chunk_id,
+                    text=chunk.text,
+                    text_hash=hashlib.sha256(chunk.text.encode('utf-8')).hexdigest(),
+                    text_length=chunk.text_length,
+
+                    # Hierarchical Context
+                    path=chunk.path,
+                    level=chunk.level,
+                    parent_id=chunk.parent_id,
+                    children_ids=chunk.children_ids.copy(),
+
+                    # Source Tracking
+                    source_file=chunk.source_file,
+                    document_id=document_id,
+                    collection_name=collection_name,
+
+                    # Content Classification
+                    content_type=chunk.content_type,
+                    value_types=chunk.value_types.copy(),
+                    key_count=chunk.key_count,
+
+                    # Strategy & Quality
+                    strategy=chunk.strategy,
+                    confidence=chunk.confidence,
+                    semantic_density=chunk.semantic_density,
+
+                    # Additional metadata
+                    domain_type="general",
+                    entity_types=[],
+                    performance_metrics=[],
+                    reasoning_content=[],
+                )
+
+                batch_vector_embeddings.append(vector_embedding)
+
+            # Store this batch immediately
+            self.logger.debug(f"Storing batch {batch_count}: {len(batch_vector_embeddings)} embeddings")
+            batch_db_ids = vector_store.insert_embeddings(batch_vector_embeddings)
+
+            # Track results
+            database_ids.extend(batch_db_ids)
+            total_stored += len(batch_db_ids)
+
+            self.logger.info(f"Batch {batch_count} complete: {len(batch_db_ids)} embeddings stored (total: {total_stored}/{len(chunks)})")
+
+            # Clear batch from memory
+            del batch_vector_embeddings
+            del embedding_vectors
+
+        self.logger.info(f"Streaming complete: {total_stored} embeddings processed and stored in {batch_count} batches")
+
+        return {
+            'total_processed': len(chunks),
+            'total_stored': total_stored,
+            'database_ids': database_ids,
+            'batches_processed': batch_count
+        }
 
     def get_embedding_info(self) -> Dict[str, Any]:
         """Get information about the embedding service configuration."""

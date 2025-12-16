@@ -28,7 +28,7 @@ class EmbeddingRecord(Base):
     embedding_created_at = Column(TIMESTAMP(timezone=True), nullable=False)
 
     # Content Identity
-    chunk_id = Column(String(255), unique=True, nullable=False)
+    chunk_id = Column(String(4096), unique=True, nullable=False)
     text = Column(Text, nullable=False)
     text_hash = Column(String(64), unique=True, nullable=False)
     text_length = Column(Integer)
@@ -36,12 +36,12 @@ class EmbeddingRecord(Base):
     # Hierarchical Context
     path = Column(Text)
     level = Column(Integer)
-    parent_id = Column(String(255))
+    parent_id = Column(String(4096))
     children_ids = Column(JSONB)
 
     # Source Tracking
     source_file = Column(Text)
-    document_id = Column(String(255))
+    document_id = Column(String(4096))
     collection_name = Column(String(100))
 
     # Content Classification
@@ -69,7 +69,7 @@ class EmbeddingRecord(Base):
     __table_args__ = (
         # Unique constraints
         UniqueConstraint('chunk_id', name='uq_embeddings_chunk_id'),
-        UniqueConstraint('text_hash', name='uq_embeddings_text_hash'),
+        UniqueConstraint('text_hash', 'document_id', name='uq_embeddings_text_hash_document'),
 
         # Vector similarity index (created separately due to pgvector requirements)
         # CREATE INDEX embeddings_vector_idx ON embeddings USING ivfflat (embedding vector_cosine_ops)
