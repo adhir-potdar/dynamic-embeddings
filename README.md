@@ -30,6 +30,21 @@ Automatically analyzes your JSON structure and selects the optimal chunking stra
 - Enables semantic similarity search
 - Supports collection and document management
 
+## 🔄 **Recent Updates (December 2025)**
+
+### Production-Ready Enhancements
+- ✅ **Automatic Document Replacement** - Re-process files without duplicate errors
+- ✅ **Extended Database Support** - Field lengths increased to 4096 characters for complex hierarchical paths
+- ✅ **Token-Aware Batching** - Intelligent OpenAI API usage with tiktoken integration
+- ✅ **Streaming Storage** - Memory-efficient processing for large datasets (100+ embeddings per batch)
+- ✅ **Cross-Collection Management** - Smart document replacement across collections
+- ✅ **Interactive Collection Selection** - Enhanced QA interface with per-query collection targeting
+
+### New Command-Line Tools
+- 🆕 **Single File Processing** - `--file` option for individual JSON processing
+- 🆕 **Collection-Scoped Search** - Interactive QA now prompts for collection per query
+- 🆕 **Replacement Control** - `--no-replace` flag for strict duplicate prevention
+
 ## ⚡ Quick Start
 
 ### Prerequisites
@@ -189,7 +204,47 @@ python examples/vector_embeddings_pipeline_demo.py
 ```
 **Shows:** Database setup, JSON processing, similarity search, collection management
 
-#### **Option 2: Command Line Interface**
+#### **Option 2: JSON File Processing**
+```bash
+# Process entire folder of JSON files
+python test_json_embeddings_loader.py /path/to/json_folder --collection my_data
+
+# Process single JSON file
+python test_json_embeddings_loader.py --file /path/to/file.json --collection my_data
+
+# Process with automatic replacement (default behavior)
+python test_json_embeddings_loader.py --file file.json --collection devices
+
+# Process without replacement (fail on duplicates)
+python test_json_embeddings_loader.py --file file.json --collection devices --no-replace
+```
+
+#### **Option 3: Interactive Q&A Search**
+```bash
+# Launch interactive search interface
+python test_interactive_qa.py
+
+# With custom settings
+python test_interactive_qa.py --threshold 0.6 --limit 5
+
+# During session, you'll be prompted:
+# Collection: devices
+# Enter your question: What is device type analysis about?
+```
+
+#### **Option 4: Collection Management**
+```bash
+# List all collections and their statistics
+./test_collection_manager.py --list
+
+# Search within specific collection
+./test_collection_manager.py --collection devices --search "device type"
+
+# Delete specific collection
+./test_collection_manager.py --delete devices
+```
+
+#### **Option 5: Command Line Interface (Legacy)**
 ```bash
 # Full demonstration
 python cli_demo.py --full-demo
@@ -201,7 +256,7 @@ python cli_demo.py --search "query text"   # Search embeddings
 python cli_demo.py --stats                 # Show statistics
 ```
 
-#### **Option 3: Document Chunking Only**
+#### **Option 6: Document Chunking Only**
 ```bash
 python examples/jsondoc_embeddingchunk_textconvertor_demo.py
 ```
@@ -403,6 +458,9 @@ python -c "from dynamic_embeddings import EmbeddingPipeline; print('✓ Import s
 - **Error Handling** - Robust retry logic and error recovery
 - **Usage Tracking** - Monitor API costs and performance
 - **Streaming Support** - Handle large documents efficiently
+- **Document Replacement** - Automatic handling of duplicate documents across collections
+- **Token Management** - Intelligent batching with tiktoken for OpenAI API efficiency
+- **Extended Schema** - Support for complex hierarchical paths up to 4096 characters
 
 ## 🤝 Contributing
 

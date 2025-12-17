@@ -103,7 +103,7 @@ def load_and_validate_json(json_path):
         raise Exception(f"Error reading {json_path}: {e}")
 
 
-def process_json_to_embeddings(json_path, collection_name, pipeline):
+def process_json_to_embeddings(json_path, collection_name, pipeline, replace_existing=True):
     """Process JSON file through the embedding pipeline."""
 
     logging.info(f"Starting processing of: {json_path}")
@@ -114,6 +114,13 @@ def process_json_to_embeddings(json_path, collection_name, pipeline):
 
         # Determine document ID
         document_id = file_stem
+
+        # Check if document already exists and delete if replace_existing is True
+        if replace_existing:
+            # First, check if document exists in ANY collection and delete it
+            existing_count = pipeline.delete_document(document_id)  # Delete from all collections
+            if existing_count > 0:
+                logging.info(f"🔄 Replaced existing document: deleted {existing_count} embeddings for '{document_id}' from all collections")
 
         # Process JSON data
         logging.info(f"Processing JSON data for document: {document_id}")
@@ -323,8 +330,8 @@ def process_folder(folder_path, collection_name):
             print(f"\n[{i}/{len(json_files)}] Processing: {json_file.name}")
             print(f"   Size: {json_file.stat().st_size / 1024:.1f} KB")
 
-            # Process the file
-            result = process_json_to_embeddings(str(json_file), collection_name, pipeline)
+            # Process the file (with replacement enabled by default for batch processing)
+            result = process_json_to_embeddings(str(json_file), collection_name, pipeline, replace_existing=True)
             all_results.append(result)
 
             if result['success']:
@@ -361,23 +368,91 @@ def process_folder(folder_path, collection_name):
         return False
 
 
+def process_single_file(file_path, collection_name, replace_existing=True):
+    """Process a single JSON file."""
+
+    print(f"🚀 PROCESSING SINGLE JSON FILE")
+    print("="*60)
+    print(f"📁 File: {file_path}")
+    print(f"📦 Collection: {collection_name}")
+    print(f"🔄 Replace existing: {'Yes' if replace_existing else 'No'}")
+
+    try:
+        # Create pipeline instance
+        pipeline = create_pipeline()
+
+        # Setup database once
+        print(f"\n⚙️  Setting up database...")
+        setup_result = pipeline.setup_database()
+        if not setup_result['success']:
+            raise Exception(f"Database setup failed: {setup_result.get('error', 'Unknown error')}")
+        print("✅ Database setup successful")
+
+        print(f"\n📊 PROCESSING FILE:")
+        print("-" * 60)
+
+        # Process the file
+        result = process_json_to_embeddings(file_path, collection_name, pipeline, replace_existing)
+
+        if result['success']:
+            print(f"\n✅ SUCCESS - File processed successfully!")
+            print(f"📦 Total Chunks: {result['total_chunks']:,}")
+            print(f"🧠 Total Embeddings: {result['total_embeddings']:,}")
+            print(f"🔧 Primary Strategy: {result['primary_strategy']}")
+            print(f"🔤 API Tokens Used: {result['api_tokens']:,}")
+            print(f"📏 Vector Dimensions: {result['vector_dimensions']}")
+
+            # Display strategy breakdown
+            print(f"\n🔍 STRATEGY BREAKDOWN:")
+            strategies = result['strategies_used']
+            for strategy, count in sorted(strategies.items(), key=lambda x: x[1], reverse=True):
+                percentage = (count / result['total_chunks']) * 100
+                print(f"   {strategy:15} {count:4} chunks ({percentage:5.1f}%)")
+
+        else:
+            print(f"\n❌ FAILED - {result['error']}")
+
+        # Cleanup
+        pipeline.close()
+
+        return result['success']
+
+    except Exception as e:
+        print(f"\n❌ Error processing file: {e}")
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Process JSON files in a folder into embeddings",
+        description="Process JSON files into embeddings - supports both folder and single file processing",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python test_json_embeddings_loader.py /Users/adhirpotdar/Work/YuktaMediaLLP/yieldmgmt-v2/reasoning_output/
+  # Process entire folder
+  python test_json_embeddings_loader.py /path/to/json_folder
   python test_json_embeddings_loader.py /path/to/json_folder --collection my_collection
+
+  # Process single file
+  python test_json_embeddings_loader.py --file /path/to/single_file.json --collection my_collection
+
+  # Process single file without replacing existing (will fail on duplicates)
+  python test_json_embeddings_loader.py --file /path/to/single_file.json --collection my_collection --no-replace
+
+  # Verbose logging
   python test_json_embeddings_loader.py /path/to/folder --verbose
         """
     )
 
-    parser.add_argument('folder_path',
-                       help='Path to folder containing JSON files')
+    parser.add_argument('folder_path', nargs='?',
+                       help='Path to folder containing JSON files (optional if using --file)')
+    parser.add_argument('--file', '-f',
+                       help='Process a single JSON file instead of a folder')
     parser.add_argument('--collection', '-c',
                        default='reasoning_output',
                        help='Collection name for embeddings (default: reasoning_output)')
+    parser.add_argument('--no-replace',
+                       action='store_true',
+                       help='Do not replace existing documents (will fail on duplicates)')
     parser.add_argument('--verbose', '-v',
                        action='store_true',
                        help='Enable verbose logging')
@@ -393,15 +468,36 @@ Examples:
         print("Please set your OpenAI API key in .env file or environment")
         sys.exit(1)
 
-    # Validate input path
-    folder_path = Path(args.folder_path).resolve()
+    # Determine processing mode
+    if args.file:
+        # Single file processing
+        file_path = Path(args.file).resolve()
 
-    if not folder_path.exists():
-        print(f"❌ ERROR: Path does not exist: {folder_path}")
+        if not file_path.exists():
+            print(f"❌ ERROR: File does not exist: {file_path}")
+            sys.exit(1)
+
+        if not file_path.suffix.lower() == '.json':
+            print(f"❌ ERROR: File must have .json extension: {file_path}")
+            sys.exit(1)
+
+        replace_existing = not args.no_replace
+        success = process_single_file(str(file_path), args.collection, replace_existing)
+
+    elif args.folder_path:
+        # Folder processing (existing functionality)
+        folder_path = Path(args.folder_path).resolve()
+
+        if not folder_path.exists():
+            print(f"❌ ERROR: Path does not exist: {folder_path}")
+            sys.exit(1)
+
+        success = process_folder(str(folder_path), args.collection)
+
+    else:
+        print("❌ ERROR: Must provide either folder_path or --file argument")
+        parser.print_help()
         sys.exit(1)
-
-    # Process the folder
-    success = process_folder(str(folder_path), args.collection)
 
     if success:
         sys.exit(0)

@@ -139,7 +139,7 @@ def show_available_collections(pipeline):
         print(f"❌ Error retrieving collections: {e}")
 
 
-def interactive_qa_session(collection_name, similarity_threshold, limit):
+def interactive_qa_session(similarity_threshold, limit):
     """Run the interactive Q&A session."""
 
     print("🚀 INTERACTIVE EMBEDDINGS Q&A SYSTEM")
@@ -153,7 +153,6 @@ def interactive_qa_session(collection_name, similarity_threshold, limit):
         show_available_collections(pipeline)
 
         print(f"\n🎯 Current Settings:")
-        print(f"   Collection: {collection_name or 'ALL COLLECTIONS'}")
         print(f"   Similarity Threshold: {similarity_threshold}")
         print(f"   Result Limit: {limit}")
 
@@ -165,40 +164,51 @@ def interactive_qa_session(collection_name, similarity_threshold, limit):
 
         while True:
             try:
-                # Get user input
-                question = input(f"\n❓ Enter your question: ").strip()
+                # Get collection name for each query
+                print(f"\n📦 Enter collection name to search in:")
+                collection_name = input("Collection: ").strip()
 
-                if not question:
+                if not collection_name:
+                    print("❌ Collection name is required. Please try again.")
                     continue
 
                 # Handle special commands
-                if question.lower() == 'exit':
+                if collection_name.lower() == 'exit':
                     print("\n👋 Goodbye!")
                     break
 
-                elif question.lower() == 'help':
+                elif collection_name.lower() == 'help':
                     print(f"\n🆘 HELP:")
                     print(f"   exit           - Quit the program")
                     print(f"   help           - Show this help")
                     print(f"   collections    - Show available collections")
                     print(f"   settings       - Show current settings")
-                    print(f"   full           - Toggle full text display")
-                    print(f"   <question>     - Search for similar content")
                     continue
 
-                elif question.lower() == 'collections':
+                elif collection_name.lower() == 'collections':
                     show_available_collections(pipeline)
                     continue
 
-                elif question.lower() == 'settings':
+                elif collection_name.lower() == 'settings':
                     print(f"\n⚙️  CURRENT SETTINGS:")
-                    print(f"   Collection: {collection_name or 'ALL COLLECTIONS'}")
                     print(f"   Similarity Threshold: {similarity_threshold}")
                     print(f"   Result Limit: {limit}")
                     continue
 
+                # Get user question
+                question = input(f"\n❓ Enter your question: ").strip()
+
+                if not question:
+                    print("❌ Question is required. Please try again.")
+                    continue
+
+                # Handle exit command in question
+                if question.lower() == 'exit':
+                    print("\n👋 Goodbye!")
+                    break
+
                 # Perform search
-                print(f"\n🔍 Searching for: '{question}'")
+                print(f"\n🔍 Searching for: '{question}' in collection: '{collection_name}'")
 
                 search_info = pipeline.search_similar(
                     query_text=question,
@@ -241,19 +251,19 @@ def main():
         epilog="""
 Examples:
   python test_interactive_qa.py
-  python test_interactive_qa.py --collection reasoning_output
   python test_interactive_qa.py --threshold 0.6 --limit 5 --verbose
 
-During the session, you can ask questions like:
+During the session, you will be prompted to enter:
+  1. Collection name (e.g., "reasoning_output", "devices")
+  2. Your question
+
+You can ask questions like:
   - "What is device type analysis about?"
   - "Show me information about geography and properties"
   - "What are the key insights from the reasoning data?"
         """
     )
 
-    parser.add_argument('--collection', '-c',
-                       default=None,
-                       help='Collection name to search (default: search all collections)')
     parser.add_argument('--threshold', '-t',
                        type=float,
                        default=float(os.getenv('DEFAULT_SIMILARITY_THRESHOLD', '0.5')),
@@ -287,7 +297,7 @@ During the session, you can ask questions like:
         sys.exit(1)
 
     # Run interactive session
-    success = interactive_qa_session(args.collection, args.threshold, args.limit)
+    success = interactive_qa_session(args.threshold, args.limit)
 
     if success:
         sys.exit(0)
