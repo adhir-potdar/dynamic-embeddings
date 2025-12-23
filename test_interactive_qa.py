@@ -217,14 +217,8 @@ def interactive_qa_session(similarity_threshold, limit):
                     similarity_threshold=similarity_threshold
                 )
 
-                # Display results
-                display_search_results(search_info, show_full_text=False)
-
-                # Ask if user wants to see full text
-                if search_info.get('matched_embeddings', 0) > 0:
-                    show_full = input(f"\n📄 Show full text for results? (y/n): ").strip().lower()
-                    if show_full in ['y', 'yes']:
-                        display_search_results(search_info, show_full_text=True)
+                # Display results with full text always shown
+                display_search_results(search_info, show_full_text=True)
 
             except KeyboardInterrupt:
                 print(f"\n\n👋 Goodbye!")
