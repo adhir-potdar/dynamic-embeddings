@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 
 class ChunkTextConverter:
@@ -53,13 +53,22 @@ class ChunkTextConverter:
 
         for key, value in chunk.items():
             if isinstance(value, dict):
-                descriptions.append(f"contains a {key} object with {len(value)} properties")
+                # Extract actual content from nested objects
+                nested_content = self._extract_object_content(value)
+                if nested_content:
+                    descriptions.append(f"has {key} containing {nested_content}")
+                else:
+                    descriptions.append(f"contains a {key} object with {len(value)} properties")
             elif isinstance(value, list):
-                descriptions.append(f"includes {key} with {len(value)} items")
+                # Extract actual content from arrays
+                array_content = self._extract_array_content(value)
+                if array_content:
+                    descriptions.append(f"includes {key} with {array_content}")
+                else:
+                    descriptions.append(f"includes {key} with {len(value)} items")
             elif isinstance(value, str):
-                # Truncate long strings
-                display_value = value[:100] + "..." if len(value) > 100 else value
-                descriptions.append(f"has {key} set to '{display_value}'")
+                # No truncation - preserve complete business content
+                descriptions.append(f"has {key} set to '{value}'")
             elif isinstance(value, (int, float)):
                 descriptions.append(f"has {key} with value {value}")
             elif isinstance(value, bool):
@@ -164,3 +173,53 @@ class ChunkTextConverter:
 
         traverse(chunk)
         return meaningful_values / max(total_values, 1)
+
+    def _extract_object_content(self, obj: Dict[str, Any]) -> str:
+        """Extract actual content from nested objects."""
+        content_parts = []
+
+        for key, value in obj.items():
+            if isinstance(value, (int, float)):
+                content_parts.append(f"{key} {value}")
+            elif isinstance(value, str):
+                # Include full string content - no truncation
+                content_parts.append(f"{key} '{value}'")
+            elif isinstance(value, bool):
+                content_parts.append(f"{key} {value}")
+            elif isinstance(value, dict):
+                # Recursively extract from nested objects (max 1 level deep to avoid complexity)
+                nested_content = self._extract_object_content(value)
+                if nested_content:
+                    content_parts.append(f"{key} with {nested_content}")
+                else:
+                    content_parts.append(f"{key} object")
+            elif isinstance(value, list):
+                array_content = self._extract_array_content(value)
+                if array_content:
+                    content_parts.append(f"{key} list with {array_content}")
+                else:
+                    content_parts.append(f"{key} list of {len(value)} items")
+
+        return ", ".join(content_parts) if content_parts else ""
+
+    def _extract_array_content(self, arr: List[Any]) -> str:
+        """Extract actual content from arrays."""
+        if not arr:
+            return ""
+
+        content_parts = []
+
+        for item in arr:
+            if isinstance(item, (int, float, str, bool)):
+                content_parts.append(str(item))
+            elif isinstance(item, dict):
+                # For object arrays, extract key content from first few items
+                obj_content = self._extract_object_content(item)
+                if obj_content:
+                    content_parts.append(f"object with {obj_content}")
+                else:
+                    content_parts.append("object")
+            else:
+                content_parts.append(f"{type(item).__name__}")
+
+        return ", ".join(content_parts) if content_parts else ""
