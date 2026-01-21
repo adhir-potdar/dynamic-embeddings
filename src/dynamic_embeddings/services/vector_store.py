@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import text, desc, asc, and_, or_
 from sqlalchemy.orm import Session
 
-from ..database.schema import EmbeddingRecord
+from ..database.schema import EmbeddingRecord, NamespaceTableFactory
 from ..database.connection import DatabaseConnection
 from .embedding_service import VectorEmbedding
 
@@ -14,28 +14,41 @@ from .embedding_service import VectorEmbedding
 class VectorStore:
     """Service for storing and retrieving vector embeddings in PGVector."""
 
-    def __init__(self, db_connection: DatabaseConnection):
+    def __init__(self, db_connection: DatabaseConnection, namespace: str = "default"):
         """Initialize vector store.
 
         Args:
             db_connection: Database connection instance
+            namespace: Default namespace for operations (default: "default")
         """
         self.db = db_connection
+        self.namespace = namespace.lower()
         self.logger = logging.getLogger(__name__)
+        self.table_factory = NamespaceTableFactory(db_connection.engine)
 
-    def insert_embedding(self, vector_embedding: VectorEmbedding) -> str:
+    def insert_embedding(self, vector_embedding: VectorEmbedding, namespace: Optional[str] = None) -> str:
         """Insert a single vector embedding into the database.
 
         Args:
             vector_embedding: VectorEmbedding to store
+            namespace: Override default namespace for this operation
 
         Returns:
             Database ID of the inserted record
         """
         try:
+            # Determine target namespace
+            target_namespace = (namespace or self.namespace).lower()
+
+            # Get namespace-specific model
+            RecordModel = self.table_factory.get_or_create_model(target_namespace)
+
+            # Ensure table exists
+            RecordModel.__table__.create(self.db.engine, checkfirst=True)
+
             with self.db.get_session() as session:
-                # Create database record
-                record = EmbeddingRecord(
+                # Create database record using namespace-specific model
+                record = RecordModel(
                     # Vector Data
                     embedding=vector_embedding.embedding,
                     embedding_model=vector_embedding.embedding_model,
@@ -89,11 +102,12 @@ class VectorStore:
             self.logger.error(f"Failed to insert embedding {vector_embedding.chunk_id}: {e}")
             raise
 
-    def insert_embeddings(self, vector_embeddings: List[VectorEmbedding]) -> List[str]:
+    def insert_embeddings(self, vector_embeddings: List[VectorEmbedding], namespace: Optional[str] = None) -> List[str]:
         """Insert multiple vector embeddings into the database.
 
         Args:
             vector_embeddings: List of VectorEmbeddings to store
+            namespace: Override default namespace for this operation
 
         Returns:
             List of database IDs for the inserted records
@@ -102,11 +116,20 @@ class VectorStore:
             return []
 
         try:
+            # Determine target namespace
+            target_namespace = (namespace or self.namespace).lower()
+
+            # Get namespace-specific model
+            RecordModel = self.table_factory.get_or_create_model(target_namespace)
+
+            # Ensure table exists
+            RecordModel.__table__.create(self.db.engine, checkfirst=True)
+
             with self.db.get_session() as session:
                 records = []
 
                 for embedding in vector_embeddings:
-                    record = EmbeddingRecord(
+                    record = RecordModel(
                         # Vector Data
                         embedding=embedding.embedding,
                         embedding_model=embedding.embedding_model,
@@ -171,8 +194,9 @@ class VectorStore:
         limit: int = 10,
         collection_name: Optional[str] = None,
         filters: Optional[Dict[str, Any]] = None,
-        similarity_threshold: float = 0.0
-    ) -> List[Tuple[EmbeddingRecord, float]]:
+        similarity_threshold: float = 0.0,
+        namespace: Optional[str] = None
+    ) -> List[Tuple[Any, float]]:
         """Perform vector similarity search.
 
         Args:
@@ -181,29 +205,36 @@ class VectorStore:
             collection_name: Filter by collection name
             filters: Additional filters (strategy, content_type, etc.)
             similarity_threshold: Minimum similarity score
+            namespace: Override default namespace for this operation
 
         Returns:
             List of (EmbeddingRecord, similarity_score) tuples
         """
         try:
+            # Determine target namespace
+            target_namespace = (namespace or self.namespace).lower()
+
+            # Get namespace-specific model
+            RecordModel = self.table_factory.get_or_create_model(target_namespace)
+
             with self.db.get_session() as session:
-                # Build base query with similarity
+                # Build base query with similarity using namespace-specific model
                 query = session.query(
-                    EmbeddingRecord,
-                    (1 - EmbeddingRecord.embedding.cosine_distance(query_vector)).label('similarity')
+                    RecordModel,
+                    (1 - RecordModel.embedding.cosine_distance(query_vector)).label('similarity')
                 )
 
                 # Apply filters
                 if collection_name:
-                    query = query.filter(EmbeddingRecord.collection_name == collection_name)
+                    query = query.filter(RecordModel.collection_name == collection_name)
 
                 if filters:
                     for key, value in filters.items():
-                        if hasattr(EmbeddingRecord, key):
+                        if hasattr(RecordModel, key):
                             if isinstance(value, list):
-                                query = query.filter(getattr(EmbeddingRecord, key).in_(value))
+                                query = query.filter(getattr(RecordModel, key).in_(value))
                             else:
-                                query = query.filter(getattr(EmbeddingRecord, key) == value)
+                                query = query.filter(getattr(RecordModel, key) == value)
 
                 # Get all results ordered by similarity (no limit yet)
                 results = query.order_by(desc('similarity')).all()
@@ -239,9 +270,10 @@ class VectorStore:
                         break
 
                 # Get total embeddings count for context
-                total_count = session.query(EmbeddingRecord).filter(
-                    EmbeddingRecord.collection_name == collection_name if collection_name else True
-                ).count()
+                count_query = session.query(RecordModel)
+                if collection_name:
+                    count_query = count_query.filter(RecordModel.collection_name == collection_name)
+                total_count = count_query.count()
 
                 self.logger.info(f"Similarity search returned {len(detached_results)} results from {total_count} total embeddings")
                 return detached_results, total_count
@@ -257,7 +289,8 @@ class VectorStore:
         limit: int = 10,
         collection_name: Optional[str] = None,
         filters: Optional[Dict[str, Any]] = None,
-        similarity_threshold: float = 0.0
+        similarity_threshold: float = 0.0,
+        namespace: Optional[str] = None
     ) -> Tuple[List[Tuple[Any, float]], int]:
         """Perform similarity search using query text.
 
@@ -268,6 +301,7 @@ class VectorStore:
             collection_name: Filter by collection name
             filters: Additional filters
             similarity_threshold: Minimum similarity score
+            namespace: Override default namespace for this operation
 
         Returns:
             Tuple of (List of (EmbeddingRecord, similarity_score) tuples, total_count)
@@ -280,67 +314,89 @@ class VectorStore:
             limit=limit,
             collection_name=collection_name,
             filters=filters,
-            similarity_threshold=similarity_threshold
+            similarity_threshold=similarity_threshold,
+            namespace=namespace
         )
 
-    def get_by_chunk_id(self, chunk_id: str) -> Optional[EmbeddingRecord]:
+    def get_by_chunk_id(self, chunk_id: str, namespace: Optional[str] = None) -> Optional[Any]:
         """Get embedding by chunk ID.
 
         Args:
             chunk_id: Chunk identifier
+            namespace: Override default namespace for this operation
 
         Returns:
             EmbeddingRecord if found, None otherwise
         """
         try:
+            # Determine target namespace
+            target_namespace = (namespace or self.namespace).lower()
+
+            # Get namespace-specific model
+            RecordModel = self.table_factory.get_or_create_model(target_namespace)
+
             with self.db.get_session() as session:
-                return session.query(EmbeddingRecord).filter(
-                    EmbeddingRecord.chunk_id == chunk_id
+                return session.query(RecordModel).filter(
+                    RecordModel.chunk_id == chunk_id
                 ).first()
 
         except Exception as e:
             self.logger.error(f"Failed to get embedding by chunk_id {chunk_id}: {e}")
             return None
 
-    def get_by_document_id(self, document_id: str, collection_name: Optional[str] = None) -> List[EmbeddingRecord]:
+    def get_by_document_id(self, document_id: str, collection_name: Optional[str] = None, namespace: Optional[str] = None) -> List[Any]:
         """Get all embeddings for a document.
 
         Args:
             document_id: Document identifier
             collection_name: Optional collection filter
+            namespace: Override default namespace for this operation
 
         Returns:
             List of EmbeddingRecords
         """
         try:
+            # Determine target namespace
+            target_namespace = (namespace or self.namespace).lower()
+
+            # Get namespace-specific model
+            RecordModel = self.table_factory.get_or_create_model(target_namespace)
+
             with self.db.get_session() as session:
-                query = session.query(EmbeddingRecord).filter(
-                    EmbeddingRecord.document_id == document_id
+                query = session.query(RecordModel).filter(
+                    RecordModel.document_id == document_id
                 )
 
                 if collection_name:
-                    query = query.filter(EmbeddingRecord.collection_name == collection_name)
+                    query = query.filter(RecordModel.collection_name == collection_name)
 
-                return query.order_by(EmbeddingRecord.level, EmbeddingRecord.path).all()
+                return query.order_by(RecordModel.level, RecordModel.path).all()
 
         except Exception as e:
             self.logger.error(f"Failed to get embeddings for document {document_id}: {e}")
             return []
 
-    def get_collection_stats(self, collection_name: str) -> Dict[str, Any]:
+    def get_collection_stats(self, collection_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Get statistics for a collection.
 
         Args:
             collection_name: Collection name
+            namespace: Override default namespace for this operation
 
         Returns:
             Statistics dictionary
         """
         try:
+            # Determine target namespace
+            target_namespace = (namespace or self.namespace).lower()
+
+            # Get namespace-specific model
+            RecordModel = self.table_factory.get_or_create_model(target_namespace)
+
             with self.db.get_session() as session:
                 # Basic counts
-                total_embeddings = session.query(EmbeddingRecord).filter(
-                    EmbeddingRecord.collection_name == collection_name
+                total_embeddings = session.query(RecordModel).filter(
+                    RecordModel.collection_name == collection_name
                 ).count()
 
                 if total_embeddings == 0:
@@ -355,19 +411,19 @@ class VectorStore:
 
                 # Strategy distribution
                 strategy_stats = session.query(
-                    EmbeddingRecord.strategy,
+                    RecordModel.strategy,
                     text('COUNT(*)')
                 ).filter(
-                    EmbeddingRecord.collection_name == collection_name
-                ).group_by(EmbeddingRecord.strategy).all()
+                    RecordModel.collection_name == collection_name
+                ).group_by(RecordModel.strategy).all()
 
                 # Content type distribution
                 content_type_stats = session.query(
-                    EmbeddingRecord.content_type,
+                    RecordModel.content_type,
                     text('COUNT(*)')
                 ).filter(
-                    EmbeddingRecord.collection_name == collection_name
-                ).group_by(EmbeddingRecord.content_type).all()
+                    RecordModel.collection_name == collection_name
+                ).group_by(RecordModel.content_type).all()
 
                 # Quality metrics
                 quality_stats = session.query(
@@ -376,8 +432,8 @@ class VectorStore:
                     text('AVG(text_length)'),
                     text('MIN(text_length)'),
                     text('MAX(text_length)')
-                ).filter(
-                    EmbeddingRecord.collection_name == collection_name
+                ).select_from(RecordModel).filter(
+                    RecordModel.collection_name == collection_name
                 ).first()
 
                 return {
@@ -398,19 +454,26 @@ class VectorStore:
             self.logger.error(f"Failed to get collection stats for {collection_name}: {e}")
             return {'error': str(e)}
 
-    def delete_by_collection(self, collection_name: str) -> int:
+    def delete_by_collection(self, collection_name: str, namespace: Optional[str] = None) -> int:
         """Delete all embeddings in a collection.
 
         Args:
             collection_name: Collection name
+            namespace: Override default namespace for this operation
 
         Returns:
             Number of deleted records
         """
         try:
+            # Determine target namespace
+            target_namespace = (namespace or self.namespace).lower()
+
+            # Get namespace-specific model
+            RecordModel = self.table_factory.get_or_create_model(target_namespace)
+
             with self.db.get_session() as session:
-                deleted_count = session.query(EmbeddingRecord).filter(
-                    EmbeddingRecord.collection_name == collection_name
+                deleted_count = session.query(RecordModel).filter(
+                    RecordModel.collection_name == collection_name
                 ).delete()
 
                 self.logger.info(f"Deleted {deleted_count} embeddings from collection '{collection_name}'")
@@ -420,24 +483,31 @@ class VectorStore:
             self.logger.error(f"Failed to delete collection {collection_name}: {e}")
             raise
 
-    def delete_by_document(self, document_id: str, collection_name: Optional[str] = None) -> int:
+    def delete_by_document(self, document_id: str, collection_name: Optional[str] = None, namespace: Optional[str] = None) -> int:
         """Delete all embeddings for a document.
 
         Args:
             document_id: Document identifier
             collection_name: Optional collection filter
+            namespace: Override default namespace for this operation
 
         Returns:
             Number of deleted records
         """
         try:
+            # Determine target namespace
+            target_namespace = (namespace or self.namespace).lower()
+
+            # Get namespace-specific model
+            RecordModel = self.table_factory.get_or_create_model(target_namespace)
+
             with self.db.get_session() as session:
-                query = session.query(EmbeddingRecord).filter(
-                    EmbeddingRecord.document_id == document_id
+                query = session.query(RecordModel).filter(
+                    RecordModel.document_id == document_id
                 )
 
                 if collection_name:
-                    query = query.filter(EmbeddingRecord.collection_name == collection_name)
+                    query = query.filter(RecordModel.collection_name == collection_name)
 
                 deleted_count = query.delete()
 
@@ -448,20 +518,27 @@ class VectorStore:
             self.logger.error(f"Failed to delete document {document_id}: {e}")
             raise
 
-    def update_embedding(self, chunk_id: str, updates: Dict[str, Any]) -> bool:
+    def update_embedding(self, chunk_id: str, updates: Dict[str, Any], namespace: Optional[str] = None) -> bool:
         """Update an embedding record.
 
         Args:
             chunk_id: Chunk identifier
             updates: Dictionary of fields to update
+            namespace: Override default namespace for this operation
 
         Returns:
             True if update was successful
         """
         try:
+            # Determine target namespace
+            target_namespace = (namespace or self.namespace).lower()
+
+            # Get namespace-specific model
+            RecordModel = self.table_factory.get_or_create_model(target_namespace)
+
             with self.db.get_session() as session:
-                record = session.query(EmbeddingRecord).filter(
-                    EmbeddingRecord.chunk_id == chunk_id
+                record = session.query(RecordModel).filter(
+                    RecordModel.chunk_id == chunk_id
                 ).first()
 
                 if not record:
@@ -484,20 +561,29 @@ class VectorStore:
             self.logger.error(f"Failed to update embedding {chunk_id}: {e}")
             return False
 
-    def list_collections(self) -> List[Dict[str, Any]]:
+    def list_collections(self, namespace: Optional[str] = None) -> List[Dict[str, Any]]:
         """List all collections with their statistics.
+
+        Args:
+            namespace: Override default namespace for this operation
 
         Returns:
             List of collection information dictionaries
         """
         try:
+            # Determine target namespace
+            target_namespace = (namespace or self.namespace).lower()
+
+            # Get namespace-specific model
+            RecordModel = self.table_factory.get_or_create_model(target_namespace)
+
             with self.db.get_session() as session:
                 # Get all collections
-                collections = session.query(EmbeddingRecord.collection_name).distinct().all()
+                collections = session.query(RecordModel.collection_name).distinct().all()
 
                 collection_info = []
                 for (collection_name,) in collections:
-                    stats = self.get_collection_stats(collection_name)
+                    stats = self.get_collection_stats(collection_name, namespace=target_namespace)
                     collection_info.append(stats)
 
                 return collection_info
@@ -510,33 +596,114 @@ class VectorStore:
         self,
         parent_path: str,
         collection_name: Optional[str] = None,
-        max_depth: Optional[int] = None
-    ) -> List[EmbeddingRecord]:
+        max_depth: Optional[int] = None,
+        namespace: Optional[str] = None
+    ) -> List[Any]:
         """Get chunks in a hierarchical structure.
 
         Args:
             parent_path: Parent path to search under
             collection_name: Optional collection filter
             max_depth: Maximum depth to search
+            namespace: Override default namespace for this operation
 
         Returns:
             List of EmbeddingRecords in hierarchical order
         """
         try:
+            # Determine target namespace
+            target_namespace = (namespace or self.namespace).lower()
+
+            # Get namespace-specific model
+            RecordModel = self.table_factory.get_or_create_model(target_namespace)
+
             with self.db.get_session() as session:
-                query = session.query(EmbeddingRecord).filter(
-                    EmbeddingRecord.path.like(f"{parent_path}%")
+                query = session.query(RecordModel).filter(
+                    RecordModel.path.like(f"{parent_path}%")
                 )
 
                 if collection_name:
-                    query = query.filter(EmbeddingRecord.collection_name == collection_name)
+                    query = query.filter(RecordModel.collection_name == collection_name)
 
                 if max_depth is not None:
                     base_level = len(parent_path.split('.'))
-                    query = query.filter(EmbeddingRecord.level <= base_level + max_depth)
+                    query = query.filter(RecordModel.level <= base_level + max_depth)
 
-                return query.order_by(EmbeddingRecord.level, EmbeddingRecord.path).all()
+                return query.order_by(RecordModel.level, RecordModel.path).all()
 
         except Exception as e:
             self.logger.error(f"Failed to get hierarchical chunks for path {parent_path}: {e}")
             return []
+
+    # Namespace management methods
+
+    def list_namespaces(self) -> List[Dict[str, Any]]:
+        """List all namespaces with statistics.
+
+        Returns:
+            List of namespace information dictionaries
+        """
+        try:
+            namespaces = []
+
+            with self.db.get_raw_connection() as conn:
+                # Query all tables matching embeddings_* pattern
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_name LIKE 'embeddings_%'
+                    AND table_schema = 'public'
+                    ORDER BY table_name
+                """)
+
+                for row in cursor.fetchall():
+                    table_name = row[0]
+                    # Extract namespace from table name
+                    namespace = table_name.replace('embeddings_', '')
+
+                    # Get row count
+                    cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+                    row_count = cursor.fetchone()[0]
+
+                    namespaces.append({
+                        'namespace': namespace,
+                        'table_name': table_name,
+                        'embedding_count': row_count
+                    })
+
+            return namespaces
+
+        except Exception as e:
+            self.logger.error(f"Failed to list namespaces: {e}")
+            return []
+
+    def create_namespace(self, namespace: str) -> bool:
+        """Create a new namespace.
+
+        Args:
+            namespace: Namespace identifier
+
+        Returns:
+            True if namespace created successfully
+        """
+        try:
+            namespace = namespace.lower()
+            self.table_factory.validate_namespace(namespace)
+
+            if self.table_factory.table_exists(namespace):
+                self.logger.warning(f"Namespace '{namespace}' already exists")
+                return False
+
+            # Get or create the model (this will create the table structure)
+            model = self.table_factory.get_or_create_model(namespace)
+
+            # Create the table in the database
+            model.__table__.create(self.db.engine, checkfirst=True)
+
+            self.logger.info(f"Namespace '{namespace}' created successfully")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to create namespace '{namespace}': {e}")
+            raise

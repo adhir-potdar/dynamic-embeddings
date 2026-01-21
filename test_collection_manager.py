@@ -6,9 +6,11 @@ This script provides utilities for managing collections in the vector database,
 including emptying/clearing collections and viewing collection statistics.
 
 Usage:
-    python test_collection_manager.py --empty <collection_name>
     python test_collection_manager.py --list
     python test_collection_manager.py --stats <collection_name>
+    python test_collection_manager.py --empty <collection_name>
+    python test_collection_manager.py --namespace prod --list
+    python test_collection_manager.py --namespace dev --stats <collection_name>
 """
 
 import os
@@ -51,8 +53,12 @@ def setup_logging(verbose=False):
     )
 
 
-def create_pipeline():
-    """Create and return configured pipeline."""
+def create_pipeline(namespace='default'):
+    """Create and return configured pipeline.
+
+    Args:
+        namespace: Namespace for embeddings (default: 'default')
+    """
     db_connection = DatabaseConnection(
         host=os.getenv('POSTGRES_HOST', 'localhost'),
         port=int(os.getenv('POSTGRES_PORT', '5432')),
@@ -64,7 +70,8 @@ def create_pipeline():
     return EmbeddingPipeline(
         database_connection=db_connection,
         openai_api_key=os.getenv('OPENAI_API_KEY'),
-        embedding_model=os.getenv('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-large')
+        embedding_model=os.getenv('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-large'),
+        namespace=namespace
     )
 
 
@@ -265,6 +272,9 @@ Examples:
                              help='Show detailed statistics for the specified collection')
 
     # Optional arguments
+    parser.add_argument('--namespace', '-ns', type=str,
+                       default=os.getenv('EMBEDDINGS_NAMESPACE', 'default'),
+                       help='Namespace for embeddings (default: %(default)s)')
     parser.add_argument('--force', '-f',
                        action='store_true',
                        help='Skip confirmation prompt when emptying collections')
@@ -282,7 +292,8 @@ Examples:
 
     try:
         # Create pipeline
-        pipeline = create_pipeline()
+        print(f"Using namespace: {args.namespace}")
+        pipeline = create_pipeline(args.namespace)
 
         # Test database connection
         collections = pipeline.list_collections()

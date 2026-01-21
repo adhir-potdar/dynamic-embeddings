@@ -30,7 +30,14 @@ Automatically analyzes your JSON structure and selects the optimal chunking stra
 - Enables semantic similarity search
 - Supports collection and document management
 
-## 🔄 **Recent Updates (December 2025)**
+## 🔄 **Recent Updates (January 2026)**
+
+### Namespace Support (NEW!)
+- ✅ **Multi-Tenant Architecture** - Complete namespace isolation with separate physical tables
+- ✅ **Namespace Management** - Create, list, view stats, and delete namespaces
+- ✅ **Flexible Migration** - Migrate data between any namespaces (copy or move)
+- ✅ **Automatic Table Creation** - Namespaces created on first use
+- ✅ **CLI Tools Enhanced** - All tools support `--namespace` parameter
 
 ### Production-Ready Enhancements
 - ✅ **Automatic Document Replacement** - Re-process files without duplicate errors
@@ -41,6 +48,8 @@ Automatically analyzes your JSON structure and selects the optimal chunking stra
 - ✅ **Interactive Collection Selection** - Enhanced QA interface with per-query collection targeting
 
 ### New Command-Line Tools
+- 🆕 **Namespace Migration** - `migrate_namespace.py` for migrating data between namespaces
+- 🆕 **Namespace Management** - List, stats, and delete operations via CLI
 - 🆕 **Single File Processing** - `--file` option for individual JSON processing
 - 🆕 **Collection-Scoped Search** - Interactive QA now prompts for collection per query
 - 🆕 **Replacement Control** - `--no-replace` flag for strict duplicate prevention
@@ -185,6 +194,9 @@ POSTGRES_PASSWORD=your_password
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_EMBEDDING_MODEL=text-embedding-3-large
 
+# Namespace Configuration (Optional)
+EMBEDDINGS_NAMESPACE=default
+
 # Engine Configuration (Optional)
 DEFAULT_COLLECTION=documents
 CHUNK_SIZE_LIMIT_MB=10
@@ -217,6 +229,9 @@ python test_json_embeddings_loader.py --file file.json --collection devices
 
 # Process without replacement (fail on duplicates)
 python test_json_embeddings_loader.py --file file.json --collection devices --no-replace
+
+# Process into specific namespace
+python test_json_embeddings_loader.py /path/to/json_folder --collection my_data --namespace prod
 ```
 
 #### **Option 3: Interactive Q&A Search**
@@ -227,6 +242,9 @@ python test_interactive_qa.py
 # With custom settings
 python test_interactive_qa.py --threshold 0.6 --limit 5
 
+# Search in specific namespace
+python test_interactive_qa.py --namespace prod --threshold 0.7
+
 # During session, you'll be prompted:
 # Collection: devices
 # Enter your question: What is device type analysis about?
@@ -235,18 +253,22 @@ python test_interactive_qa.py --threshold 0.6 --limit 5
 #### **Option 4: Collection Management**
 ```bash
 # List all collections and their statistics
-./test_collection_manager.py --list
+python test_collection_manager.py --list
 
-# Search within specific collection
-./test_collection_manager.py --collection devices --search "device type"
+# Show detailed statistics for a collection
+python test_collection_manager.py --stats devices
 
-# Delete specific collection
-./test_collection_manager.py --delete devices
+# Empty/clear a collection
+python test_collection_manager.py --empty devices
+
+# Manage collections in specific namespace
+python test_collection_manager.py --namespace prod --list
+python test_collection_manager.py --namespace prod --stats devices
 ```
 
-#### **Option 5: Command Line Interface (Legacy)**
+#### **Option 5: Command Line Interface**
 ```bash
-# Full demonstration
+# Full demonstration (default namespace)
 python cli_demo.py --full-demo
 
 # Quick commands
@@ -254,6 +276,17 @@ python cli_demo.py --setup-db              # Setup database
 python cli_demo.py --process-sample        # Process sample data
 python cli_demo.py --search "query text"   # Search embeddings
 python cli_demo.py --stats                 # Show statistics
+
+# Namespace commands
+python cli_demo.py --list-namespaces       # List all namespaces
+python cli_demo.py --namespace-stats prod  # Show namespace statistics
+python cli_demo.py --drop-namespace test   # Delete a namespace
+
+# Using custom namespaces
+python cli_demo.py --namespace prod --setup-db
+python cli_demo.py --namespace prod --process-sample
+python cli_demo.py --namespace prod --search "query"
+python cli_demo.py --namespace prod --stats
 ```
 
 #### **Option 6: Document Chunking Only**
@@ -275,13 +308,14 @@ db_connection = DatabaseConnection(
     password='your_password'
 )
 
-# Initialize complete pipeline
+# Initialize complete pipeline with namespace (default: 'default')
 pipeline = EmbeddingPipeline(
     database_connection=db_connection,
-    openai_api_key='your_openai_key'
+    openai_api_key='your_openai_key',
+    namespace='production'  # Optional: defaults to 'default'
 )
 
-# Setup database (first time only)
+# Setup database (first time only - creates namespace table)
 pipeline.setup_database()
 
 # Process your JSON data
@@ -344,6 +378,65 @@ JSON chunking breaks down complex JSON documents into meaningful, searchable pie
 
 ## 🎛️ Advanced Features
 
+### Namespace Management
+
+Namespaces provide complete data isolation with separate physical tables (`embeddings_{namespace}`). Each namespace operates independently with its own collections.
+
+#### Creating and Managing Namespaces
+
+```python
+# Create a new namespace explicitly
+pipeline.create_namespace("production")
+
+# Or let it be created automatically on first use
+prod_pipeline = EmbeddingPipeline(
+    database_connection=db_connection,
+    openai_api_key='your_key',
+    namespace='production'
+)
+
+# List all namespaces
+namespaces = pipeline.list_namespaces()
+for ns in namespaces:
+    print(f"Namespace: {ns['namespace']}")
+    print(f"Table: {ns['table_name']}")
+    print(f"Embeddings: {ns['embedding_count']:,}")
+
+# Get statistics for a specific namespace
+stats = pipeline.get_namespace_stats("production")
+print(f"Collections: {stats['collection_count']}")
+print(f"Table Size: {stats['table_size']}")
+
+# Delete a namespace (requires confirmation)
+pipeline.drop_namespace("old_namespace", confirm=True)
+```
+
+#### Migrating Data Between Namespaces
+
+```bash
+# Migrate legacy 'embeddings' table to 'embeddings_default'
+python migrate_namespace.py --legacy
+
+# Copy data from one namespace to another
+python migrate_namespace.py --source prod --target staging
+
+# Move data (delete source after migration)
+python migrate_namespace.py --source dev --target prod --move
+
+# Preview migration without executing
+python migrate_namespace.py --source prod --target staging --dry-run
+
+# Skip confirmation prompts
+python migrate_namespace.py --legacy --force
+```
+
+#### Namespace Use Cases
+
+- **Environment Separation**: Keep development, staging, and production data isolated
+- **Multi-Tenant Applications**: Separate data for different customers or organizations
+- **Data Versioning**: Maintain multiple versions of embeddings for A/B testing
+- **Compliance**: Isolate data by regulatory requirements or geographic regions
+
 ### Custom Configuration
 ```python
 # Use custom chunking configuration
@@ -356,7 +449,7 @@ register_custom_config("ecommerce", "configs/ecommerce.json")
 
 ### Collection Management
 ```python
-# List all collections
+# List all collections in current namespace
 collections = pipeline.list_collections()
 
 # Get detailed statistics
@@ -415,14 +508,18 @@ dynamic-embeddings/
 ├── src/dynamic_embeddings/
 │   ├── pipelines/           # Complete pipeline orchestration
 │   ├── services/           # Embedding and vector storage services
-│   ├── database/           # PGVector schema and connections
+│   ├── database/           # PGVector schema, connections, and migrations
+│   │   ├── schema.py       # Database schema with namespace support
+│   │   ├── migration.py    # Namespace migration utilities
+│   │   └── connection.py   # Database connection management
 │   ├── processors/         # Document chunking and text conversion
 │   ├── strategies/         # Chunking strategy implementations
 │   ├── config/            # Configuration management
 │   └── models/            # Data models and schemas
 ├── examples/              # Demo scripts and usage examples
 ├── configs/              # Configuration files
-├── cli_demo.py          # Command-line interface
+├── cli_demo.py          # Command-line interface with namespace support
+├── migrate_namespace.py # Namespace migration CLI tool
 └── README.md            # This file
 ```
 
@@ -452,6 +549,7 @@ python -c "from dynamic_embeddings import EmbeddingPipeline; print('✓ Import s
 
 ## 📈 Performance Features
 
+- **Namespace Isolation** - Complete data separation with independent physical tables
 - **Batch Processing** - Efficient OpenAI API usage
 - **Connection Pooling** - Optimized database connections
 - **Quality Validation** - Ensures meaningful chunks
@@ -461,6 +559,7 @@ python -c "from dynamic_embeddings import EmbeddingPipeline; print('✓ Import s
 - **Document Replacement** - Automatic handling of duplicate documents across collections
 - **Token Management** - Intelligent batching with tiktoken for OpenAI API efficiency
 - **Extended Schema** - Support for complex hierarchical paths up to 4096 characters
+- **Migration Safety** - Transaction-based namespace migrations with rollback support
 
 ## 🤝 Contributing
 

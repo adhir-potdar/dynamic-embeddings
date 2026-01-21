@@ -22,7 +22,8 @@ class EmbeddingPipeline:
         database_connection: DatabaseConnection,
         openai_api_key: Optional[str] = None,
         embedding_model: str = "text-embedding-3-large",
-        config_name: Optional[str] = None
+        config_name: Optional[str] = None,
+        namespace: str = "default"
     ):
         """Initialize the embedding pipeline.
 
@@ -31,12 +32,14 @@ class EmbeddingPipeline:
             openai_api_key: OpenAI API key for embeddings
             embedding_model: OpenAI embedding model to use
             config_name: Optional custom configuration name
+            namespace: Namespace for embeddings (default: "default")
         """
         self.logger = logging.getLogger(__name__)
 
         # Initialize database components
         self.db_connection = database_connection
-        self.vector_store = VectorStore(database_connection)
+        self.namespace = namespace.lower()
+        self.vector_store = VectorStore(database_connection, namespace=self.namespace)
 
         # Initialize Document Processing
         config_name = config_name or "default"
@@ -58,7 +61,7 @@ class EmbeddingPipeline:
             Setup status and information
         """
         try:
-            self.logger.info("Setting up database schema...")
+            self.logger.info(f"Setting up database schema for namespace '{self.namespace}'...")
 
             # Test connection
             connection_info = self.db_connection.test_connection()
@@ -69,17 +72,18 @@ class EmbeddingPipeline:
                     'connection_info': connection_info
                 }
 
-            # Create extension and tables
+            # Create extension and tables for namespace
             self.schema.create_extension()
-            self.schema.create_tables()
+            self.schema.create_tables(namespace=self.namespace)
 
-            # Get schema info
-            schema_info = self.schema.get_schema_info()
+            # Get namespace stats
+            namespace_stats = self.schema.get_namespace_stats(self.namespace)
 
             return {
                 'success': True,
+                'namespace': self.namespace,
                 'connection_info': connection_info,
-                'schema_info': schema_info
+                'namespace_stats': namespace_stats
             }
 
         except Exception as e:
@@ -465,11 +469,56 @@ class EmbeddingPipeline:
     def get_pipeline_info(self) -> Dict[str, Any]:
         """Get information about the pipeline configuration."""
         return {
+            'namespace': self.namespace,
             'database_info': self.db_connection.get_connection_info(),
             'embedding_service_info': self.embedding_service.get_embedding_info(),
             'document_processor_info': self.document_processor.get_processor_info(),
-            'schema_info': self.schema.get_schema_info()
+            'namespace_stats': self.schema.get_namespace_stats(self.namespace)
         }
+
+    # Namespace management methods
+
+    def create_namespace(self, namespace: str) -> bool:
+        """Create a new namespace.
+
+        Args:
+            namespace: Namespace identifier
+
+        Returns:
+            True if namespace created successfully
+        """
+        return self.schema.create_namespace(namespace)
+
+    def list_namespaces(self) -> List[Dict[str, Any]]:
+        """List all namespaces with statistics.
+
+        Returns:
+            List of namespace information dictionaries
+        """
+        return self.schema.list_namespaces()
+
+    def get_namespace_stats(self, namespace: str) -> Dict[str, Any]:
+        """Get statistics for a specific namespace.
+
+        Args:
+            namespace: Namespace identifier
+
+        Returns:
+            Dictionary with namespace statistics
+        """
+        return self.schema.get_namespace_stats(namespace)
+
+    def drop_namespace(self, namespace: str, confirm: bool = False) -> bool:
+        """Drop a namespace.
+
+        Args:
+            namespace: Namespace identifier
+            confirm: Must be True to actually drop (safety check)
+
+        Returns:
+            True if namespace dropped successfully
+        """
+        return self.schema.drop_namespace(namespace, confirm=confirm)
 
     def close(self) -> None:
         """Close all pipeline connections."""

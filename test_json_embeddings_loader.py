@@ -55,8 +55,12 @@ def setup_logging(verbose=False):
     )
 
 
-def create_pipeline():
-    """Create and return configured pipeline."""
+def create_pipeline(namespace='default'):
+    """Create and return configured pipeline.
+
+    Args:
+        namespace: Namespace for embeddings (default: 'default')
+    """
     db_connection = DatabaseConnection(
         host=os.getenv('POSTGRES_HOST', 'localhost'),
         port=int(os.getenv('POSTGRES_PORT', '5432')),
@@ -68,7 +72,8 @@ def create_pipeline():
     return EmbeddingPipeline(
         database_connection=db_connection,
         openai_api_key=os.getenv('OPENAI_API_KEY'),
-        embedding_model=os.getenv('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-large')
+        embedding_model=os.getenv('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-large'),
+        namespace=namespace
     )
 
 
@@ -297,13 +302,14 @@ def display_summary_statistics(all_results):
     print("\n" + "="*80)
 
 
-def process_folder(folder_path, collection_name):
+def process_folder(folder_path, collection_name, namespace='default'):
     """Process all JSON files in a folder."""
 
     print(f"🚀 PROCESSING JSON FILES IN FOLDER")
     print("="*60)
     print(f"📁 Folder: {folder_path}")
     print(f"📦 Collection: {collection_name}")
+    print(f"📦 Namespace: {namespace}")
 
     try:
         # Find all JSON files
@@ -311,7 +317,7 @@ def process_folder(folder_path, collection_name):
         print(f"📄 Found {len(json_files)} JSON files")
 
         # Create single pipeline instance for all files
-        pipeline = create_pipeline()
+        pipeline = create_pipeline(namespace)
 
         # Setup database once
         print(f"\n⚙️  Setting up database...")
@@ -368,18 +374,19 @@ def process_folder(folder_path, collection_name):
         return False
 
 
-def process_single_file(file_path, collection_name, replace_existing=True):
+def process_single_file(file_path, collection_name, replace_existing=True, namespace='default'):
     """Process a single JSON file."""
 
     print(f"🚀 PROCESSING SINGLE JSON FILE")
     print("="*60)
     print(f"📁 File: {file_path}")
     print(f"📦 Collection: {collection_name}")
+    print(f"📦 Namespace: {namespace}")
     print(f"🔄 Replace existing: {'Yes' if replace_existing else 'No'}")
 
     try:
         # Create pipeline instance
-        pipeline = create_pipeline()
+        pipeline = create_pipeline(namespace)
 
         # Setup database once
         print(f"\n⚙️  Setting up database...")
@@ -450,6 +457,9 @@ Examples:
     parser.add_argument('--collection', '-c',
                        default='reasoning_output',
                        help='Collection name for embeddings (default: reasoning_output)')
+    parser.add_argument('--namespace', '-ns', type=str,
+                       default=os.getenv('EMBEDDINGS_NAMESPACE', 'default'),
+                       help='Namespace for embeddings (default: %(default)s)')
     parser.add_argument('--no-replace',
                        action='store_true',
                        help='Do not replace existing documents (will fail on duplicates)')
@@ -482,7 +492,7 @@ Examples:
             sys.exit(1)
 
         replace_existing = not args.no_replace
-        success = process_single_file(str(file_path), args.collection, replace_existing)
+        success = process_single_file(str(file_path), args.collection, replace_existing, args.namespace)
 
     elif args.folder_path:
         # Folder processing (existing functionality)
@@ -492,7 +502,7 @@ Examples:
             print(f"❌ ERROR: Path does not exist: {folder_path}")
             sys.exit(1)
 
-        success = process_folder(str(folder_path), args.collection)
+        success = process_folder(str(folder_path), args.collection, args.namespace)
 
     else:
         print("❌ ERROR: Must provide either folder_path or --file argument")

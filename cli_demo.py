@@ -5,11 +5,16 @@ CLI Demo Script for Dynamic JSON Embeddings Pipeline
 Quick start script to test the complete pipeline with sample data.
 
 Usage:
-    python cli_demo.py --setup-db          # Setup database only
-    python cli_demo.py --process-sample    # Process sample data
-    python cli_demo.py --search "query"    # Search embeddings
-    python cli_demo.py --stats             # Show collection stats
-    python cli_demo.py --full-demo         # Run complete demo
+    python cli_demo.py --setup-db                        # Setup database only
+    python cli_demo.py --process-sample                  # Process sample data
+    python cli_demo.py --search "query"                  # Search embeddings
+    python cli_demo.py --stats                           # Show collection stats
+    python cli_demo.py --full-demo                       # Run complete demo
+    python cli_demo.py --namespace prod --setup-db       # Setup with custom namespace
+    python cli_demo.py --namespace dev --process-sample  # Process in dev namespace
+    python cli_demo.py --list-namespaces                 # List all namespaces
+    python cli_demo.py --namespace-stats prod            # Show namespace stats
+    python cli_demo.py --drop-namespace test_ns          # Delete namespace
 """
 
 import argparse
@@ -52,8 +57,12 @@ def setup_logging(verbose=False):
     )
 
 
-def create_pipeline():
-    """Create and return configured pipeline."""
+def create_pipeline(namespace='default'):
+    """Create and return configured pipeline.
+
+    Args:
+        namespace: Namespace for embeddings (default: 'default')
+    """
     db_connection = DatabaseConnection(
         host=os.getenv('POSTGRES_HOST', 'localhost'),
         port=int(os.getenv('POSTGRES_PORT', '5432')),
@@ -65,7 +74,8 @@ def create_pipeline():
     return EmbeddingPipeline(
         database_connection=db_connection,
         openai_api_key=os.getenv('OPENAI_API_KEY'),
-        embedding_model=os.getenv('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-large')
+        embedding_model=os.getenv('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-large'),
+        namespace=namespace
     )
 
 
@@ -99,14 +109,16 @@ def create_sample_data():
 
 def setup_database(args):
     """Setup database schema and extensions."""
-    print("Setting up database...")
+    namespace = getattr(args, 'namespace', 'default')
+    print(f"Setting up database for namespace '{namespace}'...")
 
     try:
-        pipeline = create_pipeline()
+        pipeline = create_pipeline(namespace)
         result = pipeline.setup_database()
 
         if result['success']:
             print("✓ Database setup completed successfully!")
+            print(f"✓ Namespace: {result['namespace']}")
             connection_info = result['connection_info']
             print(f"✓ PostgreSQL: {connection_info['postgresql_version']}")
             print(f"✓ PGVector: {'Installed' if connection_info['pgvector_installed'] else 'Not installed'}")
@@ -124,10 +136,11 @@ def setup_database(args):
 
 def process_sample(args):
     """Process sample data through the pipeline."""
-    print("Processing sample Ad-Tech data...")
+    namespace = getattr(args, 'namespace', 'default')
+    print(f"Processing sample Ad-Tech data in namespace '{namespace}'...")
 
     try:
-        pipeline = create_pipeline()
+        pipeline = create_pipeline(namespace)
         sample_data = create_sample_data()
 
         result = pipeline.process_json_data(
@@ -138,6 +151,7 @@ def process_sample(args):
 
         if result['success']:
             print("✓ Sample data processed successfully!")
+            print(f"✓ Namespace: {namespace}")
             print(f"✓ Generated {result['total_embeddings']} embeddings")
             print(f"✓ Collection: {result['collection_name']}")
             print(f"✓ Document ID: {result['document_id']}")
@@ -159,12 +173,13 @@ def process_sample(args):
 
 def search_embeddings(args):
     """Search for similar embeddings."""
+    namespace = getattr(args, 'namespace', 'default')
     query = args.query
-    print(f"🔍 Searching for: '{query}'")
+    print(f"🔍 Searching for: '{query}' in namespace '{namespace}'")
     print("=" * 60)
 
     try:
-        pipeline = create_pipeline()
+        pipeline = create_pipeline(namespace)
 
         # Use configurable threshold from environment, default to 0.0 for demo
         default_threshold = float(os.getenv('DEFAULT_SIMILARITY_THRESHOLD', '0.0'))
@@ -220,22 +235,34 @@ def search_embeddings(args):
 
 def show_stats(args):
     """Show collection statistics."""
-    print("Collection Statistics:")
+    namespace = getattr(args, 'namespace', 'default')
+    print(f"Collection Statistics for namespace '{namespace}':")
+    print("=" * 60)
 
     try:
-        pipeline = create_pipeline()
+        pipeline = create_pipeline(namespace)
 
         collections = pipeline.list_collections()
 
         if collections:
-            for collection in collections:
-                print(f"\nCollection: {collection['collection_name']}")
-                print(f"  Embeddings: {collection['total_embeddings']}")
-                print(f"  Strategies: {list(collection['strategies'].keys())}")
-                print(f"  Content Types: {list(collection['content_types'].keys())}")
-                print(f"  Avg Semantic Density: {collection.get('avg_semantic_density', 0):.3f}")
+            # Show summary
+            total_embeddings = sum(col['total_embeddings'] for col in collections)
+            print(f"\n📊 SUMMARY:")
+            print(f"   Total Collections: {len(collections)}")
+            print(f"   Total Embeddings: {total_embeddings:,}")
+            print(f"\n{'='*60}\n")
+
+            # Show individual collections
+            for i, collection in enumerate(collections, 1):
+                print(f"📁 Collection {i}: {collection['collection_name']}")
+                print(f"   Embeddings: {collection['total_embeddings']:,}")
+                print(f"   Strategies: {list(collection['strategies'].keys())}")
+                print(f"   Content Types: {list(collection['content_types'].keys())}")
+                print(f"   Avg Semantic Density: {collection.get('avg_semantic_density', 0):.3f}")
+                if i < len(collections):
+                    print()
         else:
-            print("No collections found.")
+            print("\n❌ No collections found.")
 
         pipeline.close()
 
@@ -245,7 +272,8 @@ def show_stats(args):
 
 def run_full_demo(args):
     """Run complete demonstration."""
-    print("Running Full Demo...")
+    namespace = getattr(args, 'namespace', 'default')
+    print(f"Running Full Demo in namespace '{namespace}'...")
     print("=" * 50)
 
     # Setup database
@@ -269,7 +297,7 @@ def run_full_demo(args):
     for query in test_queries:
         print(f"\nSearching: '{query}'")
         try:
-            pipeline = create_pipeline()
+            pipeline = create_pipeline(namespace)
 
             # Use configurable threshold from environment
             demo_threshold = float(os.getenv('DEFAULT_SIMILARITY_THRESHOLD', '0.4'))
@@ -311,6 +339,118 @@ def run_full_demo(args):
     print("Full demo completed!")
 
 
+def list_namespaces(args):
+    """List all namespaces with statistics."""
+    print("📚 LISTING ALL NAMESPACES")
+    print("=" * 60)
+
+    try:
+        # Create a pipeline (namespace doesn't matter for listing)
+        pipeline = create_pipeline()
+
+        namespaces = pipeline.list_namespaces()
+
+        if not namespaces:
+            print("❌ No namespaces found in the database.")
+            print("💡 Create a namespace with: python cli_demo.py --namespace <name> --setup-db")
+            return
+
+        print(f"\nFound {len(namespaces)} namespace(s):\n")
+
+        for ns_info in namespaces:
+            print(f"📦 Namespace: {ns_info['namespace']}")
+            print(f"   Table: {ns_info['table_name']}")
+            print(f"   Embeddings: {ns_info['embedding_count']:,}")
+            print(f"   Vector Index: {'✓' if ns_info.get('vector_index_exists', False) else '✗'}")
+            print()
+
+        pipeline.close()
+
+    except Exception as e:
+        print(f"✗ Error: {e}")
+
+
+def namespace_stats(args):
+    """Show detailed statistics for a specific namespace."""
+    namespace = args.namespace_stats
+    print(f"📊 NAMESPACE STATISTICS: {namespace}")
+    print("=" * 60)
+
+    try:
+        # Create a pipeline (any namespace works for getting stats)
+        pipeline = create_pipeline()
+
+        stats = pipeline.get_namespace_stats(namespace)
+
+        if not stats.get('exists', False):
+            print(f"❌ Namespace '{namespace}' does not exist")
+            print("💡 List available namespaces with: python cli_demo.py --list-namespaces")
+            pipeline.close()
+            return
+
+        print(f"\n✓ Namespace: {stats['namespace']}")
+        print(f"  Table: {stats['table_name']}")
+        print(f"  Embeddings: {stats['embedding_count']:,}")
+        print(f"  Collections: {stats['collection_count']}")
+        print(f"  Table Size: {stats['table_size']}")
+        print(f"  Vector Index: {'✓ Yes' if stats['vector_index_exists'] else '✗ No'}")
+
+        pipeline.close()
+
+    except Exception as e:
+        print(f"✗ Error: {e}")
+
+
+def drop_namespace(args):
+    """Delete a namespace."""
+    namespace = args.drop_namespace
+    print(f"🗑️  DROP NAMESPACE: {namespace}")
+    print("=" * 60)
+
+    try:
+        # Create a pipeline
+        pipeline = create_pipeline()
+
+        # Check if namespace exists
+        stats = pipeline.get_namespace_stats(namespace)
+
+        if not stats.get('exists', False):
+            print(f"❌ Namespace '{namespace}' does not exist")
+            print("💡 List available namespaces with: python cli_demo.py --list-namespaces")
+            pipeline.close()
+            return
+
+        # Show what will be deleted
+        print(f"\n⚠️  WARNING: This will permanently delete:")
+        print(f"   Namespace: {namespace}")
+        print(f"   Table: {stats['table_name']}")
+        print(f"   Embeddings: {stats['embedding_count']:,}")
+        print(f"   Collections: {stats['collection_count']}")
+        print(f"\n⚠️  This action cannot be undone!")
+
+        # Confirm deletion
+        if not args.force:
+            response = input(f"\n❓ Are you sure you want to delete namespace '{namespace}'? (yes/no): ").strip().lower()
+            if response not in ['yes', 'y']:
+                print("❌ Operation cancelled by user.")
+                pipeline.close()
+                return
+
+        # Perform deletion
+        print(f"\n🗑️  Deleting namespace '{namespace}'...")
+        result = pipeline.drop_namespace(namespace, confirm=True)
+
+        if result:
+            print(f"✅ Namespace '{namespace}' deleted successfully")
+        else:
+            print(f"❌ Failed to delete namespace '{namespace}'")
+
+        pipeline.close()
+
+    except Exception as e:
+        print(f"✗ Error: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="CLI Demo for Dynamic JSON Embeddings Pipeline",
@@ -327,6 +467,17 @@ def main():
                        help='Show collection statistics')
     parser.add_argument('--full-demo', action='store_true',
                        help='Run complete demonstration')
+    parser.add_argument('--namespace', '-ns', type=str,
+                       default=os.getenv('EMBEDDINGS_NAMESPACE', 'default'),
+                       help='Namespace for embeddings (default: %(default)s)')
+    parser.add_argument('--list-namespaces', action='store_true',
+                       help='List all namespaces with statistics')
+    parser.add_argument('--namespace-stats', type=str, metavar='NAMESPACE',
+                       help='Show detailed statistics for a namespace')
+    parser.add_argument('--drop-namespace', type=str, metavar='NAMESPACE',
+                       help='Delete a namespace (requires confirmation)')
+    parser.add_argument('--force', '-f', action='store_true',
+                       help='Skip confirmation prompts')
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Enable verbose logging')
 
@@ -353,6 +504,12 @@ def main():
         show_stats(args)
     elif args.full_demo:
         run_full_demo(args)
+    elif args.list_namespaces:
+        list_namespaces(args)
+    elif args.namespace_stats:
+        namespace_stats(args)
+    elif args.drop_namespace:
+        drop_namespace(args)
     else:
         parser.print_help()
         print("\nQuick start:")

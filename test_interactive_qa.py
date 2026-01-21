@@ -52,8 +52,12 @@ def setup_logging(verbose=False):
     )
 
 
-def create_pipeline():
-    """Create and return configured pipeline."""
+def create_pipeline(namespace='default'):
+    """Create and return configured pipeline.
+
+    Args:
+        namespace: Namespace for embeddings (default: 'default')
+    """
     db_connection = DatabaseConnection(
         host=os.getenv('POSTGRES_HOST', 'localhost'),
         port=int(os.getenv('POSTGRES_PORT', '5432')),
@@ -65,7 +69,8 @@ def create_pipeline():
     return EmbeddingPipeline(
         database_connection=db_connection,
         openai_api_key=os.getenv('OPENAI_API_KEY'),
-        embedding_model=os.getenv('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-large')
+        embedding_model=os.getenv('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-large'),
+        namespace=namespace
     )
 
 
@@ -139,15 +144,16 @@ def show_available_collections(pipeline):
         print(f"❌ Error retrieving collections: {e}")
 
 
-def interactive_qa_session(similarity_threshold, limit):
+def interactive_qa_session(similarity_threshold, limit, namespace='default'):
     """Run the interactive Q&A session."""
 
     print("🚀 INTERACTIVE EMBEDDINGS Q&A SYSTEM")
     print("="*60)
+    print(f"📦 Namespace: {namespace}")
 
     try:
         # Create pipeline
-        pipeline = create_pipeline()
+        pipeline = create_pipeline(namespace)
 
         # Show available collections
         show_available_collections(pipeline)
@@ -258,6 +264,9 @@ You can ask questions like:
         """
     )
 
+    parser.add_argument('--namespace', '-ns', type=str,
+                       default=os.getenv('EMBEDDINGS_NAMESPACE', 'default'),
+                       help='Namespace for embeddings (default: %(default)s)')
     parser.add_argument('--threshold', '-t',
                        type=float,
                        default=float(os.getenv('DEFAULT_SIMILARITY_THRESHOLD', '0.5')),
@@ -291,7 +300,7 @@ You can ask questions like:
         sys.exit(1)
 
     # Run interactive session
-    success = interactive_qa_session(args.threshold, args.limit)
+    success = interactive_qa_session(args.threshold, args.limit, args.namespace)
 
     if success:
         sys.exit(0)

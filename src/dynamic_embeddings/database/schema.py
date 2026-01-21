@@ -2,14 +2,16 @@
 
 from sqlalchemy import (
     Column, Integer, String, Text, REAL, TIMESTAMP, BOOLEAN, JSON,
-    Index, UniqueConstraint, create_engine, text
+    Index, UniqueConstraint, create_engine, text, Table, MetaData
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
 import logging
-from typing import Optional
+import threading
+import re
+from typing import Optional, Dict, Type, Any
 
 Base = declarative_base()
 
@@ -88,6 +90,196 @@ class EmbeddingRecord(Base):
         return f"<EmbeddingRecord(id={self.id}, chunk_id='{self.chunk_id}', strategy='{self.strategy}')>"
 
 
+class NamespaceTableFactory:
+    """Factory for dynamically creating namespace-specific embedding tables."""
+
+    # Class-level constants
+    MAX_NAMESPACE_LENGTH = 50
+    NAMESPACE_PATTERN = re.compile(r'^[a-z0-9_]+$')
+    RESERVED_NAMESPACES = {'backup', 'temp', 'tmp', 'system', 'admin'}
+
+    def __init__(self, engine):
+        """Initialize the namespace table factory.
+
+        Args:
+            engine: SQLAlchemy engine instance
+        """
+        self.engine = engine
+        self.logger = logging.getLogger(__name__)
+        self._namespace_models: Dict[str, Type[Base]] = {}
+        self._lock = threading.Lock()
+
+    def validate_namespace(self, namespace: str) -> None:
+        """Validate namespace name.
+
+        Args:
+            namespace: Namespace name to validate
+
+        Raises:
+            ValueError: If namespace is invalid
+        """
+        if not namespace:
+            raise ValueError("Namespace cannot be empty")
+
+        # Normalize to lowercase
+        namespace = namespace.lower()
+
+        if len(namespace) > self.MAX_NAMESPACE_LENGTH:
+            raise ValueError(f"Namespace too long (max {self.MAX_NAMESPACE_LENGTH} chars): {namespace}")
+
+        if not self.NAMESPACE_PATTERN.match(namespace):
+            raise ValueError(f"Invalid namespace name (use only lowercase letters, numbers, underscore): {namespace}")
+
+        if namespace in self.RESERVED_NAMESPACES:
+            raise ValueError(f"Reserved namespace name: {namespace}")
+
+    def get_table_name(self, namespace: str) -> str:
+        """Get table name for a namespace.
+
+        Args:
+            namespace: Namespace identifier
+
+        Returns:
+            Table name (e.g., 'embeddings_prod')
+        """
+        namespace = namespace.lower()
+        return f"embeddings_{namespace}"
+
+    def table_exists(self, namespace: str) -> bool:
+        """Check if namespace table exists in database.
+
+        Args:
+            namespace: Namespace identifier
+
+        Returns:
+            True if table exists
+        """
+        table_name = self.get_table_name(namespace)
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text(
+                    "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
+                    "WHERE table_name = :table_name)"
+                ), {"table_name": table_name}).scalar()
+                return bool(result)
+        except Exception as e:
+            self.logger.error(f"Failed to check if table {table_name} exists: {e}")
+            return False
+
+    def get_or_create_model(self, namespace: str) -> Type[Base]:
+        """Get or create SQLAlchemy model for namespace.
+
+        Args:
+            namespace: Namespace identifier
+
+        Returns:
+            SQLAlchemy model class for the namespace table
+        """
+        namespace = namespace.lower()
+        self.validate_namespace(namespace)
+
+        # Check cache first
+        if namespace in self._namespace_models:
+            return self._namespace_models[namespace]
+
+        # Thread-safe model creation
+        with self._lock:
+            # Double-check after acquiring lock
+            if namespace in self._namespace_models:
+                return self._namespace_models[namespace]
+
+            # Create dynamic model
+            table_name = self.get_table_name(namespace)
+
+            # Define table columns (same as EmbeddingRecord)
+            table = Table(
+                table_name,
+                Base.metadata,
+
+                # Primary Key
+                Column('id', Integer, primary_key=True, autoincrement=True),
+
+                # Vector Data
+                Column('embedding', Vector(1536)),
+                Column('embedding_model', String(100), nullable=False),
+                Column('embedding_created_at', TIMESTAMP(timezone=True), nullable=False),
+
+                # Content Identity
+                Column('chunk_id', String(4096), unique=True, nullable=False),
+                Column('text', Text, nullable=False),
+                Column('text_hash', String(64), unique=True, nullable=False),
+                Column('text_length', Integer),
+
+                # Hierarchical Context
+                Column('path', Text),
+                Column('level', Integer),
+                Column('parent_id', String(4096)),
+                Column('children_ids', JSONB),
+
+                # Source Tracking
+                Column('source_file', Text),
+                Column('document_id', String(4096)),
+                Column('collection_name', String(100)),
+
+                # Content Classification
+                Column('content_type', String(50)),
+                Column('value_types', JSONB),
+                Column('key_count', Integer),
+
+                # Strategy & Quality
+                Column('strategy', String(50)),
+                Column('confidence', REAL),
+                Column('semantic_density', REAL),
+
+                # Domain & Analysis
+                Column('domain_type', String(100)),
+                Column('entity_types', JSONB),
+                Column('performance_metrics', JSONB),
+                Column('reasoning_content', JSONB),
+
+                # Technical Metadata
+                Column('created_at', TIMESTAMP(timezone=True), server_default=func.now()),
+                Column('updated_at', TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now()),
+                Column('version', String(20), default='1.0'),
+                Column('processing_pipeline', String(50), default='vector_embeddings'),
+
+                # Constraints and Indexes
+                UniqueConstraint('chunk_id', name=f'uq_{table_name}_chunk_id'),
+                UniqueConstraint('text_hash', 'document_id', name=f'uq_{table_name}_text_hash_document'),
+                Index(f'ix_{table_name}_source', 'source_file', 'document_id'),
+                Index(f'ix_{table_name}_strategy', 'strategy', 'confidence'),
+                Index(f'ix_{table_name}_content_type', 'content_type', 'domain_type'),
+                Index(f'ix_{table_name}_path', 'path'),
+                Index(f'ix_{table_name}_collection', 'collection_name'),
+                Index(f'ix_{table_name}_level', 'level'),
+                Index(f'ix_{table_name}_created', 'created_at'),
+
+                extend_existing=True
+            )
+
+            # Create dynamic model class
+            model_class = type(
+                f'EmbeddingRecord_{namespace}',
+                (Base,),
+                {
+                    '__table__': table,
+                    '__repr__': lambda self: f"<EmbeddingRecord_{namespace}(id={self.id}, chunk_id='{self.chunk_id}')>"
+                }
+            )
+
+            # Cache the model
+            self._namespace_models[namespace] = model_class
+
+            self.logger.debug(f"Created model for namespace '{namespace}' with table '{table_name}'")
+            return model_class
+
+    def clear_cache(self) -> None:
+        """Clear the model cache."""
+        with self._lock:
+            self._namespace_models.clear()
+            self.logger.debug("Cleared namespace model cache")
+
+
 class EmbeddingSchema:
     """Manages database schema creation and migration for embeddings."""
 
@@ -100,6 +292,7 @@ class EmbeddingSchema:
         self.database_url = database_url
         self.engine = create_engine(database_url, echo=False)
         self.logger = logging.getLogger(__name__)
+        self.table_factory = NamespaceTableFactory(self.engine)
 
     def create_extension(self) -> None:
         """Create the pgvector extension if it doesn't exist."""
@@ -122,49 +315,65 @@ class EmbeddingSchema:
             self.logger.error(f"Failed to create pgvector extension: {e}")
             raise
 
-    def create_tables(self) -> None:
-        """Create all embedding tables and indexes."""
-        try:
-            self.logger.info("Creating database tables...")
+    def create_tables(self, namespace: str = "default") -> None:
+        """Create all embedding tables and indexes.
 
-            # Create tables
-            Base.metadata.create_all(self.engine)
+        Args:
+            namespace: Namespace for table creation (default: "default")
+        """
+        try:
+            namespace = namespace.lower()
+            self.logger.info(f"Creating database tables for namespace '{namespace}'...")
+
+            # Get or create the model for this namespace
+            model = self.table_factory.get_or_create_model(namespace)
+
+            # Create the table
+            model.__table__.create(self.engine, checkfirst=True)
 
             # Create vector index separately (pgvector specific)
-            self._create_vector_indexes()
+            self._create_vector_indexes(namespace)
 
-            self.logger.info("Database schema created successfully")
+            self.logger.info(f"Database schema created successfully for namespace '{namespace}'")
 
         except Exception as e:
-            self.logger.error(f"Failed to create database schema: {e}")
+            self.logger.error(f"Failed to create database schema for namespace '{namespace}': {e}")
             raise
 
-    def _create_vector_indexes(self) -> None:
-        """Create pgvector-specific indexes."""
+    def _create_vector_indexes(self, namespace: str = "default") -> None:
+        """Create pgvector-specific indexes.
+
+        Args:
+            namespace: Namespace for index creation (default: "default")
+        """
         try:
+            namespace = namespace.lower()
+            table_name = self.table_factory.get_table_name(namespace)
+            index_name = f"{table_name}_vector_idx"
+
             with self.engine.connect() as conn:
                 # Check if vector index already exists
                 result = conn.execute(text(
-                    "SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE indexname = 'embeddings_vector_idx')"
-                )).scalar()
+                    "SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE indexname = :index_name)"
+                ), {"index_name": index_name}).scalar()
 
                 if not result:
-                    self.logger.info("Creating vector similarity index...")
+                    self.logger.info(f"Creating vector similarity index for namespace '{namespace}'...")
 
                     # Create IVFFlat index for approximate nearest neighbor search
                     conn.execute(text(
-                        "CREATE INDEX embeddings_vector_idx ON embeddings "
+                        f"CREATE INDEX {index_name} ON {table_name} "
                         "USING ivfflat (embedding vector_cosine_ops) "
                         "WITH (lists = 100)"
                     ))
 
                     conn.commit()
-                    self.logger.info("Vector similarity index created")
+                    self.logger.info(f"Vector similarity index created for namespace '{namespace}'")
                 else:
-                    self.logger.info("Vector similarity index already exists")
+                    self.logger.info(f"Vector similarity index already exists for namespace '{namespace}'")
 
         except Exception as e:
-            self.logger.warning(f"Failed to create vector index: {e}")
+            self.logger.warning(f"Failed to create vector index for namespace '{namespace}': {e}")
             # Vector index is optional for basic functionality
 
     def drop_tables(self) -> None:
@@ -274,3 +483,202 @@ class EmbeddingSchema:
         except Exception as e:
             self.logger.error(f"Failed to create collection view: {e}")
             raise
+
+    # Namespace management methods
+
+    def create_namespace(self, namespace: str) -> bool:
+        """Create a new namespace table with schema and indexes.
+
+        Args:
+            namespace: Namespace identifier
+
+        Returns:
+            True if namespace created successfully
+
+        Raises:
+            ValueError: If namespace name is invalid
+        """
+        try:
+            namespace = namespace.lower()
+            self.table_factory.validate_namespace(namespace)
+
+            if self.namespace_exists(namespace):
+                self.logger.warning(f"Namespace '{namespace}' already exists")
+                return False
+
+            self.logger.info(f"Creating namespace '{namespace}'...")
+
+            # Create table and indexes
+            self.create_tables(namespace)
+
+            self.logger.info(f"Namespace '{namespace}' created successfully")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to create namespace '{namespace}': {e}")
+            raise
+
+    def namespace_exists(self, namespace: str) -> bool:
+        """Check if a namespace table exists.
+
+        Args:
+            namespace: Namespace identifier
+
+        Returns:
+            True if namespace exists
+        """
+        try:
+            namespace = namespace.lower()
+            return self.table_factory.table_exists(namespace)
+        except Exception as e:
+            self.logger.error(f"Failed to check if namespace '{namespace}' exists: {e}")
+            return False
+
+    def list_namespaces(self) -> list[Dict[str, Any]]:
+        """List all namespace tables with statistics.
+
+        Returns:
+            List of namespace info dictionaries
+        """
+        try:
+            namespaces = []
+
+            with self.engine.connect() as conn:
+                # Query all tables matching embeddings_* pattern
+                result = conn.execute(text("""
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_name LIKE 'embeddings_%'
+                    AND table_schema = 'public'
+                    ORDER BY table_name
+                """))
+
+                for row in result:
+                    table_name = row[0]
+                    # Extract namespace from table name
+                    namespace = table_name.replace('embeddings_', '')
+
+                    # Get row count
+                    count_result = conn.execute(text(f"SELECT COUNT(*) FROM {table_name}"))
+                    row_count = count_result.scalar()
+
+                    # Check if vector index exists
+                    index_name = f"{table_name}_vector_idx"
+                    index_exists = conn.execute(text(
+                        "SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE indexname = :index_name)"
+                    ), {"index_name": index_name}).scalar()
+
+                    namespaces.append({
+                        'namespace': namespace,
+                        'table_name': table_name,
+                        'embedding_count': row_count,
+                        'vector_index_exists': index_exists
+                    })
+
+            return namespaces
+
+        except Exception as e:
+            self.logger.error(f"Failed to list namespaces: {e}")
+            return []
+
+    def drop_namespace(self, namespace: str, confirm: bool = False) -> bool:
+        """Drop a namespace table.
+
+        Args:
+            namespace: Namespace identifier
+            confirm: Must be True to actually drop the table (safety check)
+
+        Returns:
+            True if namespace dropped successfully
+
+        Raises:
+            ValueError: If confirm is False
+        """
+        if not confirm:
+            raise ValueError("Must set confirm=True to drop namespace (safety check)")
+
+        try:
+            namespace = namespace.lower()
+
+            if not self.namespace_exists(namespace):
+                self.logger.warning(f"Namespace '{namespace}' does not exist")
+                return False
+
+            table_name = self.table_factory.get_table_name(namespace)
+
+            self.logger.warning(f"Dropping namespace '{namespace}' (table: {table_name})...")
+
+            with self.engine.connect() as conn:
+                # Drop the table (CASCADE will drop dependent objects like indexes)
+                conn.execute(text(f"DROP TABLE IF EXISTS {table_name} CASCADE"))
+                conn.commit()
+
+            # Clear from cache
+            if namespace in self.table_factory._namespace_models:
+                del self.table_factory._namespace_models[namespace]
+
+            self.logger.info(f"Namespace '{namespace}' dropped successfully")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to drop namespace '{namespace}': {e}")
+            raise
+
+    def get_namespace_stats(self, namespace: str) -> Dict[str, Any]:
+        """Get statistics for a specific namespace.
+
+        Args:
+            namespace: Namespace identifier
+
+        Returns:
+            Dictionary with namespace statistics
+        """
+        try:
+            namespace = namespace.lower()
+
+            if not self.namespace_exists(namespace):
+                return {
+                    'namespace': namespace,
+                    'exists': False,
+                    'error': 'Namespace does not exist'
+                }
+
+            table_name = self.table_factory.get_table_name(namespace)
+
+            with self.engine.connect() as conn:
+                # Get row count
+                row_count = conn.execute(text(f"SELECT COUNT(*) FROM {table_name}")).scalar()
+
+                # Get distinct collections
+                collections = conn.execute(text(
+                    f"SELECT COUNT(DISTINCT collection_name) FROM {table_name}"
+                )).scalar()
+
+                # Get table size
+                table_size = conn.execute(text("""
+                    SELECT pg_size_pretty(pg_total_relation_size(:table_name))
+                """), {"table_name": table_name}).scalar()
+
+                # Check vector index
+                index_name = f"{table_name}_vector_idx"
+                index_exists = conn.execute(text(
+                    "SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE indexname = :index_name)"
+                ), {"index_name": index_name}).scalar()
+
+                return {
+                    'namespace': namespace,
+                    'exists': True,
+                    'table_name': table_name,
+                    'embedding_count': row_count,
+                    'collection_count': collections,
+                    'table_size': table_size,
+                    'vector_index_exists': index_exists
+                }
+
+        except Exception as e:
+            self.logger.error(f"Failed to get stats for namespace '{namespace}': {e}")
+            return {
+                'namespace': namespace,
+                'exists': False,
+                'error': str(e)
+            }
