@@ -139,18 +139,6 @@ class NamespaceMigration:
                 if source_count != target_count:
                     raise Exception(f"Row count mismatch: source={source_count}, target={target_count}")
 
-                # Recreate vector index for target
-                self.logger.info("Creating vector index for target table...")
-                index_name = f"{target_table}_vector_idx"
-                try:
-                    conn.execute(text(f"""
-                        CREATE INDEX {index_name} ON {target_table}
-                        USING ivfflat (embedding vector_cosine_ops)
-                        WITH (lists = 100)
-                    """))
-                except Exception as idx_error:
-                    self.logger.warning(f"Failed to create vector index (optional): {idx_error}")
-
                 # Handle source table based on mode
                 if mode == 'move':
                     backup_name = f"{source_table}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -159,6 +147,21 @@ class NamespaceMigration:
                     source_action = f"renamed to {backup_name}"
                 else:
                     source_action = "kept unchanged"
+
+            # Recreate vector index for target (outside transaction - optional operation)
+            self.logger.info("Creating vector index for target table...")
+            index_name = f"{target_table}_vector_idx"
+            try:
+                with self.engine.begin() as conn:
+                    conn.execute(text(f"""
+                        CREATE INDEX {index_name} ON {target_table}
+                        USING ivfflat (embedding vector_cosine_ops)
+                        WITH (lists = 100)
+                    """))
+                self.logger.info(f"Vector index created successfully")
+            except Exception as idx_error:
+                self.logger.warning(f"Failed to create vector index (optional): {idx_error}")
+                self.logger.info("Migration succeeded without vector index - you can create it manually later")
 
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()

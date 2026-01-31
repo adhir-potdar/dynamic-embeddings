@@ -90,6 +90,67 @@ class EmbeddingRecord(Base):
         return f"<EmbeddingRecord(id={self.id}, chunk_id='{self.chunk_id}', strategy='{self.strategy}')>"
 
 
+def get_collection_metadata_model(namespace: str = 'default'):
+    """
+    Factory function to create namespace-specific collection metadata model.
+
+    Table name format: embeddings_collection_metadata_<namespace>
+    Examples: embeddings_collection_metadata_default, embeddings_collection_metadata_revenue_mgmt
+
+    Args:
+        namespace: Namespace identifier (lowercase alphanumeric + underscore)
+
+    Returns:
+        SQLAlchemy model class for the namespace-specific collection metadata table
+    """
+    # Validate namespace
+    if not re.match(r'^[a-z0-9_]+$', namespace):
+        raise ValueError(f"Invalid namespace: {namespace}. Must contain only lowercase letters, numbers, and underscores.")
+
+    table_name = f'embeddings_collection_metadata_{namespace}'
+
+    # Create dynamic model class
+    class CollectionMetadata(Base):
+        """Metadata table for fast collection lookups.
+
+        Stores parsed information from collection names to enable fast filtering
+        by dimension, time granularity, and date ranges without expensive queries.
+
+        Collection name format: {dimension}_{granularity}_{start1}_{end1}_vs_{start2}_{end2}
+        Example: property_geo_device_qoq_20250601_20250831_vs_20250901_20251130
+
+        User provides single date range which is matched against both period1 and period2.
+        """
+        __tablename__ = table_name
+        __table_args__ = {'extend_existing': True}
+
+        # Primary key
+        collection_name = Column(String(200), primary_key=True)
+
+        # Parsed components from collection name
+        dimension = Column(String(100), nullable=False, index=True)
+        time_granularity = Column(String(10), nullable=False, index=True)
+
+        # Date ranges (YYYYMMDD format as integers for efficient range queries)
+        period1_start_date = Column(Integer, nullable=False, index=True)
+        period1_end_date = Column(Integer, nullable=False, index=True)
+        period2_start_date = Column(Integer, nullable=False, index=True)
+        period2_end_date = Column(Integer, nullable=False, index=True)
+
+        # Statistics (optional, for display)
+        total_embeddings = Column(Integer, default=0)
+        last_updated_at = Column(TIMESTAMP(timezone=True), nullable=False)
+        created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
+
+        def __repr__(self):
+            return f"<CollectionMetadata(table={table_name}, name='{self.collection_name}', dim='{self.dimension}', gran='{self.time_granularity}')>"
+
+    # Set the class name to include namespace for debugging
+    CollectionMetadata.__name__ = f'CollectionMetadata_{namespace}'
+
+    return CollectionMetadata
+
+
 class NamespaceTableFactory:
     """Factory for dynamically creating namespace-specific embedding tables."""
 
