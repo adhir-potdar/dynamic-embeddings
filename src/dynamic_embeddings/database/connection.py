@@ -76,6 +76,9 @@ class DatabaseConnection:
             bind=self.engine
         )
 
+        # Flag to suppress error logging for expected failures
+        self._suppress_error_logging = False
+
         self.logger.info(f"Database connection initialized: {self._safe_url()}")
 
     def _safe_url(self) -> str:
@@ -146,10 +149,28 @@ class DatabaseConnection:
             session.commit()
         except Exception as e:
             session.rollback()
-            self.logger.error(f"Database session error: {e}")
+            # Only log error if not suppressed (for expected failures like checking table existence)
+            if not self._suppress_error_logging:
+                self.logger.error(f"Database session error: {e}")
             raise
         finally:
             session.close()
+
+    @contextmanager
+    def suppress_errors(self):
+        """Context manager to suppress error logging for expected failures.
+
+        Usage:
+            with db.suppress_errors():
+                # Query that might fail expectedly (e.g., checking if table exists)
+                session.query(Model).limit(1).first()
+        """
+        original_value = self._suppress_error_logging
+        self._suppress_error_logging = True
+        try:
+            yield
+        finally:
+            self._suppress_error_logging = original_value
 
     def get_raw_connection(self):
         """Get a raw database connection for advanced operations.

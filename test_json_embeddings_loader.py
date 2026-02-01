@@ -55,11 +55,12 @@ def setup_logging(verbose=False):
     )
 
 
-def create_pipeline(namespace='default'):
+def create_pipeline(namespace='default', skip_setup=False):
     """Create and return configured pipeline.
 
     Args:
         namespace: Namespace for embeddings (default: 'default')
+        skip_setup: Skip database setup if namespace already exists (default: False)
     """
     db_connection = DatabaseConnection(
         host=os.getenv('POSTGRES_HOST', 'localhost'),
@@ -69,12 +70,18 @@ def create_pipeline(namespace='default'):
         password=os.getenv('POSTGRES_PASSWORD', ''),
     )
 
-    return EmbeddingPipeline(
+    pipeline = EmbeddingPipeline(
         database_connection=db_connection,
         openai_api_key=os.getenv('OPENAI_API_KEY'),
         embedding_model=os.getenv('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-large'),
         namespace=namespace
     )
+
+    # Mark setup as done if skipping (prevents setup_database() calls)
+    if skip_setup:
+        pipeline._setup_done = True
+
+    return pipeline
 
 
 def load_and_validate_json(json_path):
@@ -388,12 +395,20 @@ def process_single_file(file_path, collection_name, replace_existing=True, names
         # Create pipeline instance
         pipeline = create_pipeline(namespace)
 
-        # Setup database once
-        print(f"\n⚙️  Setting up database...")
-        setup_result = pipeline.setup_database()
-        if not setup_result['success']:
-            raise Exception(f"Database setup failed: {setup_result.get('error', 'Unknown error')}")
-        print("✅ Database setup successful")
+        # Check if namespace exists before expensive setup
+        namespace_exists = pipeline.schema.namespace_exists(namespace)
+
+        if namespace_exists:
+            # Namespace already exists, skip expensive setup_database() call
+            print(f"\n⚙️  Namespace '{namespace}' already exists, skipping setup...")
+            print("✅ Using existing database schema")
+        else:
+            # Setup database once for new namespace
+            print(f"\n⚙️  Setting up database...")
+            setup_result = pipeline.setup_database()
+            if not setup_result['success']:
+                raise Exception(f"Database setup failed: {setup_result.get('error', 'Unknown error')}")
+            print("✅ Database setup successful")
 
         print(f"\n📊 PROCESSING FILE:")
         print("-" * 60)

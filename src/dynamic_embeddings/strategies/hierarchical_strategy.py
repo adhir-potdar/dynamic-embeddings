@@ -13,6 +13,11 @@ class HierarchicalChunkingStrategy(BaseChunkingStrategy):
         self.max_size_bytes = self.config.get('max_size_bytes', 1024 * 100)  # 100KB
         self.preserve_relationships = self.config.get('preserve_relationships', True)
 
+        # Skip large summary chunks (Level 0 & 1) that exceed embedding token limits
+        self.skip_large_summaries = self.config.get('skip_large_summaries', True)
+        self.max_tokens_per_chunk = self.config.get('max_tokens_per_chunk', 7600)  # OpenAI limit
+        self.skip_levels = self.config.get('skip_levels', [0, 1])  # Levels to check for size
+
     def chunk(self, json_data: Dict[str, Any], source_id: str = "document") -> List[DocumentChunk]:
         """Chunk JSON data preserving hierarchical structure.
 
@@ -113,6 +118,13 @@ class HierarchicalChunkingStrategy(BaseChunkingStrategy):
         if not content:
             return None
 
+        # Skip large summary chunks (Level 0 & 1) if they exceed token limits
+        if self.skip_large_summaries and depth_level in self.skip_levels:
+            estimated_tokens = self._estimate_tokens(content)
+            if estimated_tokens > self.max_tokens_per_chunk:
+                # Skip creating this chunk - it would be too large for embedding
+                return None
+
         path_str = self._extract_path(content, path)
         chunk_id = self._generate_chunk_id(source_id, f"hier_{len(path)}_{path_str.replace('.', '_')}")
 
@@ -192,6 +204,30 @@ class HierarchicalChunkingStrategy(BaseChunkingStrategy):
 
         # Mixed if more than 2 types and contains objects/arrays
         return len(value_types) > 2 and ('object' in value_types or 'array' in value_types)
+
+    def _estimate_tokens(self, content: Any) -> int:
+        """Estimate token count for content.
+
+        Uses rough approximation: 1 token ≈ 4 characters
+        More accurate than byte count for OpenAI token limits.
+
+        Args:
+            content: Content to estimate tokens for
+
+        Returns:
+            Estimated token count
+        """
+        import json
+        try:
+            # Convert to JSON string to get character count
+            json_str = json.dumps(content, ensure_ascii=False)
+            char_count = len(json_str)
+            # Rough approximation: 1 token ≈ 4 characters
+            estimated_tokens = char_count // 4
+            return estimated_tokens
+        except Exception:
+            # Fallback to byte-based estimation if JSON serialization fails
+            return self._calculate_chunk_size(content) // 4
 
     def _extract_domain_tags(self, content: Dict[str, Any], path: List[str]) -> List[str]:
         """Extract domain-specific tags from content and path."""

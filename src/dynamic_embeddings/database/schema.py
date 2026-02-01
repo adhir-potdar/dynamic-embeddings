@@ -15,6 +15,9 @@ from typing import Optional, Dict, Type, Any
 
 Base = declarative_base()
 
+# Global cache for collection metadata models
+_collection_metadata_models = {}
+
 
 class EmbeddingRecord(Base):
     """SQLAlchemy model for embedding storage in PGVector."""
@@ -103,15 +106,48 @@ def get_collection_metadata_model(namespace: str = 'default'):
     Returns:
         SQLAlchemy model class for the namespace-specific collection metadata table
     """
+    # Check cache first to avoid re-creating the same class
+    global _collection_metadata_models
+    if namespace in _collection_metadata_models:
+        return _collection_metadata_models[namespace]
+
     # Validate namespace
     if not re.match(r'^[a-z0-9_]+$', namespace):
         raise ValueError(f"Invalid namespace: {namespace}. Must contain only lowercase letters, numbers, and underscores.")
 
     table_name = f'embeddings_collection_metadata_{namespace}'
 
-    # Create dynamic model class
-    class CollectionMetadata(Base):
-        """Metadata table for fast collection lookups.
+    # Create dynamic model class with unique name from the start
+    class_name = f'CollectionMetadata_{namespace}'
+
+    # Create dynamic model class using type() to set name immediately
+    CollectionMetadata = type(
+        class_name,
+        (Base,),
+        {
+            '__tablename__': table_name,
+            '__table_args__': {'extend_existing': True},
+
+            # Primary key
+            'collection_name': Column(String(200), primary_key=True),
+
+            # Parsed components from collection name
+            'dimension': Column(String(100), nullable=False, index=True),
+            'time_granularity': Column(String(10), nullable=False, index=True),
+
+            # Date ranges (YYYYMMDD format as integers for efficient range queries)
+            'period1_start_date': Column(Integer, nullable=False, index=True),
+            'period1_end_date': Column(Integer, nullable=False, index=True),
+            'period2_start_date': Column(Integer, nullable=False, index=True),
+            'period2_end_date': Column(Integer, nullable=False, index=True),
+
+            # Statistics (optional, for display)
+            'total_embeddings': Column(Integer, default=0),
+            'last_updated_at': Column(TIMESTAMP(timezone=True), nullable=False),
+            'created_at': Column(TIMESTAMP(timezone=True), server_default=func.now()),
+
+            '__repr__': lambda self: f"<{class_name}(name='{self.collection_name}', dim='{self.dimension}', gran='{self.time_granularity}')>",
+            '__doc__': """Metadata table for fast collection lookups.
 
         Stores parsed information from collection names to enable fast filtering
         by dimension, time granularity, and date ranges without expensive queries.
@@ -121,32 +157,11 @@ def get_collection_metadata_model(namespace: str = 'default'):
 
         User provides single date range which is matched against both period1 and period2.
         """
-        __tablename__ = table_name
-        __table_args__ = {'extend_existing': True}
+        }
+    )
 
-        # Primary key
-        collection_name = Column(String(200), primary_key=True)
-
-        # Parsed components from collection name
-        dimension = Column(String(100), nullable=False, index=True)
-        time_granularity = Column(String(10), nullable=False, index=True)
-
-        # Date ranges (YYYYMMDD format as integers for efficient range queries)
-        period1_start_date = Column(Integer, nullable=False, index=True)
-        period1_end_date = Column(Integer, nullable=False, index=True)
-        period2_start_date = Column(Integer, nullable=False, index=True)
-        period2_end_date = Column(Integer, nullable=False, index=True)
-
-        # Statistics (optional, for display)
-        total_embeddings = Column(Integer, default=0)
-        last_updated_at = Column(TIMESTAMP(timezone=True), nullable=False)
-        created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
-
-        def __repr__(self):
-            return f"<CollectionMetadata(table={table_name}, name='{self.collection_name}', dim='{self.dimension}', gran='{self.time_granularity}')>"
-
-    # Set the class name to include namespace for debugging
-    CollectionMetadata.__name__ = f'CollectionMetadata_{namespace}'
+    # Cache the model to prevent re-creation
+    _collection_metadata_models[namespace] = CollectionMetadata
 
     return CollectionMetadata
 
