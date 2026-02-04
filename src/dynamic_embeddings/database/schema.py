@@ -404,8 +404,18 @@ class EmbeddingSchema:
             # Get or create the model for this namespace
             model = self.table_factory.get_or_create_model(namespace)
 
-            # Create the table
-            model.__table__.create(self.engine, checkfirst=True)
+            # Create the table with IF NOT EXISTS logic
+            try:
+                model.__table__.create(self.engine, checkfirst=True)
+                self.logger.info(f"Table created for namespace '{namespace}'")
+            except Exception as table_err:
+                # Check if error is due to existing constraints/indexes (safe to ignore)
+                error_msg = str(table_err).lower()
+                if 'already exists' in error_msg or 'duplicate' in error_msg:
+                    self.logger.warning(f"Table or constraints already exist for namespace '{namespace}', continuing...")
+                else:
+                    # Re-raise if it's a different error
+                    raise
 
             # Create vector index separately (pgvector specific)
             self._create_vector_indexes(namespace)
@@ -436,9 +446,9 @@ class EmbeddingSchema:
                 if not result:
                     self.logger.info(f"Creating vector similarity index for namespace '{namespace}'...")
 
-                    # Create IVFFlat index for approximate nearest neighbor search
+                    # Create IVFFlat index for approximate nearest neighbor search with IF NOT EXISTS
                     conn.execute(text(
-                        f"CREATE INDEX {index_name} ON {table_name} "
+                        f"CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} "
                         "USING ivfflat (embedding vector_cosine_ops) "
                         "WITH (lists = 100)"
                     ))
