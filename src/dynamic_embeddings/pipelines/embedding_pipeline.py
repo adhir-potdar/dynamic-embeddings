@@ -310,25 +310,25 @@ class EmbeddingPipeline:
         try:
             self.logger.info(f"Vector Generation: Generating embeddings for {len(chunks)} chunks")
 
-            # Check if streaming storage is enabled
-            enable_streaming = os.getenv('ENABLE_STREAMING_STORAGE', 'true').lower() == 'true'
+            # Check if Batch API is enabled (default: true)
+            use_batch_api = os.getenv('USE_BATCH_API', 'true').lower() == 'true'
 
-            if enable_streaming and len(chunks) > 50:
-                self.logger.info("Using streaming storage for large chunk set")
+            if use_batch_api:
+                self.logger.info("Using OpenAI Batch API for embedding generation (no rate limits, 50% cost savings)")
 
-                # Use streaming approach - process in batches with regular flushes
-                result = self.embedding_service.embed_chunks_streaming(
+                # Use Batch API - asynchronous processing with no rate limits
+                result = self.embedding_service.embed_chunks_batch_api(
                     chunks, self.vector_store, collection_name, document_id
                 )
 
-                self.logger.info(f"Streaming storage complete: Processed {result['total_stored']} embeddings in {result['batches_processed']} batches")
+                self.logger.info(f"Batch API complete: Processed {result['total_stored']} embeddings via batch {result['batch_id']}")
 
                 # Collect usage statistics
                 embedding_info = self.embedding_service.get_embedding_info()
 
                 return {
                     'success': True,
-                    'vector_embeddings': [],  # Not kept in memory for streaming
+                    'vector_embeddings': [],  # Not kept in memory for batch processing
                     'database_ids': result['database_ids'],
                     'stats': {
                         'total_embeddings': result['total_stored'],
@@ -336,46 +336,80 @@ class EmbeddingPipeline:
                         'api_usage': embedding_info['usage_stats'],
                         'vector_dimensions': 1536,  # text-embedding-3-large dimensions
                         'storage_ids': result['database_ids'],
-                        'streaming_stats': {
-                            'batches_processed': result['batches_processed'],
-                            'buffer_size': int(os.getenv('EMBEDDING_BUFFER_SIZE', '100')),
-                            'memory_efficient': True
+                        'batch_stats': {
+                            'batch_id': result['batch_id'],
+                            'cost_savings': '50%',
+                            'rate_limit_free': True
                         }
                     }
                 }
             else:
-                # Use traditional approach for smaller chunk sets
-                self.logger.info("Using traditional storage for small chunk set")
+                # Fallback to streaming or traditional approach
+                enable_streaming = os.getenv('ENABLE_STREAMING_STORAGE', 'true').lower() == 'true'
 
-                # Generate vector embeddings
-                vector_embeddings = self.embedding_service.embed_chunks(
-                    chunks, collection_name, document_id
-                )
+                if enable_streaming and len(chunks) > 50:
+                    self.logger.info("Using streaming storage for large chunk set")
 
-                self.logger.info(f"Vector Generation: Generated {len(vector_embeddings)} vector embeddings")
+                    # Use streaming approach - process in batches with regular flushes
+                    result = self.embedding_service.embed_chunks_streaming(
+                        chunks, self.vector_store, collection_name, document_id
+                    )
 
-                # Store in PGVector database
-                self.logger.info("Vector Storage: Storing embeddings in PGVector database")
+                    self.logger.info(f"Streaming storage complete: Processed {result['total_stored']} embeddings in {result['batches_processed']} batches")
 
-                database_ids = self.vector_store.insert_embeddings(vector_embeddings)
+                    # Collect usage statistics
+                    embedding_info = self.embedding_service.get_embedding_info()
 
-                self.logger.info(f"Vector storage complete: Stored {len(database_ids)} embeddings in database")
-
-                # Collect usage statistics
-                embedding_info = self.embedding_service.get_embedding_info()
-
-                return {
-                    'success': True,
-                    'vector_embeddings': vector_embeddings,
-                    'database_ids': database_ids,
-                    'stats': {
-                        'total_embeddings': len(vector_embeddings),
-                        'embedding_model': embedding_info['model'],
-                        'api_usage': embedding_info['usage_stats'],
-                        'vector_dimensions': len(vector_embeddings[0].embedding) if vector_embeddings else 0,
-                        'storage_ids': database_ids
+                    return {
+                        'success': True,
+                        'vector_embeddings': [],  # Not kept in memory for streaming
+                        'database_ids': result['database_ids'],
+                        'stats': {
+                            'total_embeddings': result['total_stored'],
+                            'embedding_model': embedding_info['model'],
+                            'api_usage': embedding_info['usage_stats'],
+                            'vector_dimensions': 1536,  # text-embedding-3-large dimensions
+                            'storage_ids': result['database_ids'],
+                            'streaming_stats': {
+                                'batches_processed': result['batches_processed'],
+                                'buffer_size': int(os.getenv('EMBEDDING_BUFFER_SIZE', '100')),
+                                'memory_efficient': True
+                            }
+                        }
                     }
-                }
+                else:
+                    # Use traditional approach for smaller chunk sets
+                    self.logger.info("Using traditional storage for small chunk set")
+
+                    # Generate vector embeddings
+                    vector_embeddings = self.embedding_service.embed_chunks(
+                        chunks, collection_name, document_id
+                    )
+
+                    self.logger.info(f"Vector Generation: Generated {len(vector_embeddings)} vector embeddings")
+
+                    # Store in PGVector database
+                    self.logger.info("Vector Storage: Storing embeddings in PGVector database")
+
+                    database_ids = self.vector_store.insert_embeddings(vector_embeddings)
+
+                    self.logger.info(f"Vector storage complete: Stored {len(database_ids)} embeddings in database")
+
+                    # Collect usage statistics
+                    embedding_info = self.embedding_service.get_embedding_info()
+
+                    return {
+                        'success': True,
+                        'vector_embeddings': vector_embeddings,
+                        'database_ids': database_ids,
+                        'stats': {
+                            'total_embeddings': len(vector_embeddings),
+                            'embedding_model': embedding_info['model'],
+                            'api_usage': embedding_info['usage_stats'],
+                            'vector_dimensions': len(vector_embeddings[0].embedding) if vector_embeddings else 0,
+                            'storage_ids': database_ids
+                        }
+                    }
 
         except Exception as e:
             self.logger.error(f"Vector generation failed: {e}")

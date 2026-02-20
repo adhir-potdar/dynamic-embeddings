@@ -11,6 +11,9 @@ import os
 from dataclasses import dataclass, asdict
 import time
 import tiktoken
+import json
+import tempfile
+from pathlib import Path
 
 from ..models.embedding_chunk import EmbeddingChunk
 
@@ -259,7 +262,7 @@ class EmbeddingService:
         return self.generate_embeddings([text])[0]
 
     def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings for multiple texts with token-aware batching.
+        """Generate embeddings for multiple texts with token-aware batching and rate limit pacing.
 
         Args:
             texts: List of texts to embed
@@ -275,7 +278,13 @@ class EmbeddingService:
         # Create token-aware batches instead of fixed-size batches
         token_batches = self.create_token_aware_batches(texts)
 
+        # Get pacing configuration from environment
+        delay_after_batches = int(os.getenv('DELAY_AFTER_BATCHES', '5'))
+        batch_delay_seconds = int(os.getenv('BATCH_DELAY_SECONDS', '2'))
+
         self.logger.info(f"Processing {len(texts)} texts in {len(token_batches)} token-aware batches")
+        if len(token_batches) > delay_after_batches:
+            self.logger.info(f"Pacing enabled: {batch_delay_seconds}s delay after every {delay_after_batches} batches")
 
         for batch_idx, batch in enumerate(token_batches, 1):
             total_tokens = sum(self.count_tokens(text) for text in batch)
@@ -283,6 +292,11 @@ class EmbeddingService:
 
             batch_embeddings = self._generate_batch_embeddings(batch)
             embeddings.extend(batch_embeddings)
+
+            # Add delay after every N batches to prevent TPM bursts (but not after the last batch)
+            if batch_idx % delay_after_batches == 0 and batch_idx < len(token_batches):
+                self.logger.info(f"⏸️  Pacing: Adding {batch_delay_seconds}s delay after batch {batch_idx}/{len(token_batches)} to prevent rate limits")
+                time.sleep(batch_delay_seconds)
 
         return embeddings
 
@@ -618,6 +632,274 @@ class EmbeddingService:
             'database_ids': database_ids,
             'batches_processed': batch_count
         }
+
+    def embed_chunks_batch_api(
+        self,
+        chunks: List[EmbeddingChunk],
+        vector_store,
+        collection_name: str = "default",
+        document_id: str = "document",
+        poll_interval: int = 60,
+        max_wait_time: int = 3600
+    ) -> Dict[str, Any]:
+        """Convert EmbeddingChunks to VectorEmbeddings using OpenAI Batch API.
+
+        This method uses the Batch API to avoid rate limits and reduce costs by 50%.
+        Suitable for processing large volumes of embeddings asynchronously.
+
+        Args:
+            chunks: List of EmbeddingChunks from document chunking
+            vector_store: VectorStore instance for storage
+            collection_name: Collection to store in
+            document_id: Document identifier
+            poll_interval: Seconds to wait between status checks (default: 60)
+            max_wait_time: Maximum seconds to wait for batch completion (default: 3600)
+
+        Returns:
+            Dictionary with processing statistics and database IDs
+        """
+        if not chunks:
+            return {
+                'total_processed': 0,
+                'total_stored': 0,
+                'database_ids': [],
+                'batch_id': None
+            }
+
+        self.logger.info(f"Starting Batch API processing for {len(chunks)} chunks")
+
+        # Filter out oversized chunks
+        valid_chunks = []
+        for chunk in chunks:
+            token_count = self.count_tokens(chunk.text)
+            if token_count <= self.max_tokens_per_text:
+                valid_chunks.append(chunk)
+            else:
+                self.logger.warning(f"Skipping chunk {chunk.chunk_id}: {token_count} tokens exceeds limit")
+
+        if not valid_chunks:
+            self.logger.warning("No valid chunks to process after filtering")
+            return {
+                'total_processed': 0,
+                'total_stored': 0,
+                'database_ids': [],
+                'batch_id': None
+            }
+
+        self.logger.info(f"Processing {len(valid_chunks)} valid chunks via Batch API")
+
+        # Step 1: Create JSONL file with embedding requests
+        batch_input_file = self._create_batch_input_file(valid_chunks)
+
+        try:
+            # Step 2: Upload file to OpenAI
+            self.logger.info("Uploading batch input file to OpenAI...")
+            uploaded_file = self.client.files.create(
+                file=open(batch_input_file, 'rb'),
+                purpose='batch'
+            )
+            self.logger.info(f"File uploaded: {uploaded_file.id}")
+
+            # Step 3: Create batch job
+            self.logger.info("Creating batch job...")
+            batch = self.client.batches.create(
+                input_file_id=uploaded_file.id,
+                endpoint="/v1/embeddings",
+                completion_window="24h"
+            )
+            batch_id = batch.id
+            self.logger.info(f"Batch job created: {batch_id}")
+            self.logger.info(f"Status: {batch.status}")
+
+            # Step 4: Poll for completion
+            self.logger.info(f"Polling for batch completion (checking every {poll_interval}s, max wait: {max_wait_time}s)...")
+            elapsed_time = 0
+            while elapsed_time < max_wait_time:
+                batch = self.client.batches.retrieve(batch_id)
+                status = batch.status
+
+                self.logger.info(f"Batch status: {status} (elapsed: {elapsed_time}s)")
+
+                if status == "completed":
+                    self.logger.info("Batch processing completed!")
+                    break
+                elif status in ["failed", "expired", "cancelled"]:
+                    error_msg = f"Batch processing {status}"
+                    if hasattr(batch, 'errors') and batch.errors:
+                        error_msg += f": {batch.errors}"
+                    raise Exception(error_msg)
+
+                time.sleep(poll_interval)
+                elapsed_time += poll_interval
+
+            if elapsed_time >= max_wait_time:
+                raise Exception(f"Batch processing timeout after {max_wait_time}s")
+
+            # Step 5: Download and process results
+            self.logger.info("Downloading batch results...")
+            output_file_id = batch.output_file_id
+
+            if not output_file_id:
+                raise Exception("Batch completed but no output file available")
+
+            result_content = self.client.files.content(output_file_id)
+            result_data = result_content.read().decode('utf-8')
+
+            # Step 6: Parse results and create vector embeddings
+            self.logger.info("Parsing batch results and creating vector embeddings...")
+            vector_embeddings = self._parse_batch_results(
+                result_data,
+                valid_chunks,
+                collection_name,
+                document_id
+            )
+
+            # Step 7: Store embeddings in database
+            self.logger.info(f"Storing {len(vector_embeddings)} embeddings in database...")
+            database_ids = vector_store.insert_embeddings(vector_embeddings)
+
+            # Update usage stats
+            self.usage_stats['total_requests'] += 1
+            self.usage_stats['total_embeddings'] += len(vector_embeddings)
+
+            self.logger.info(f"Batch API processing complete: {len(database_ids)} embeddings stored")
+
+            return {
+                'total_processed': len(chunks),
+                'total_stored': len(database_ids),
+                'database_ids': database_ids,
+                'batch_id': batch_id
+            }
+
+        finally:
+            # Clean up temporary file
+            if os.path.exists(batch_input_file):
+                os.remove(batch_input_file)
+                self.logger.debug(f"Cleaned up temporary file: {batch_input_file}")
+
+    def _create_batch_input_file(self, chunks: List[EmbeddingChunk]) -> str:
+        """Create JSONL file for batch API input.
+
+        Args:
+            chunks: List of EmbeddingChunks to process
+
+        Returns:
+            Path to created JSONL file
+        """
+        temp_file = tempfile.NamedTemporaryFile(
+            mode='w',
+            suffix='.jsonl',
+            delete=False,
+            encoding='utf-8'
+        )
+
+        for idx, chunk in enumerate(chunks):
+            request = {
+                "custom_id": f"chunk_{idx}_{chunk.chunk_id}",
+                "method": "POST",
+                "url": "/v1/embeddings",
+                "body": {
+                    "model": self.model,
+                    "input": chunk.text,
+                    "dimensions": 1536
+                }
+            }
+            temp_file.write(json.dumps(request) + '\n')
+
+        temp_file.close()
+        self.logger.info(f"Created batch input file: {temp_file.name} ({len(chunks)} requests)")
+        return temp_file.name
+
+    def _parse_batch_results(
+        self,
+        result_data: str,
+        chunks: List[EmbeddingChunk],
+        collection_name: str,
+        document_id: str
+    ) -> List[VectorEmbedding]:
+        """Parse batch API results and create VectorEmbeddings.
+
+        Args:
+            result_data: JSONL string with batch results
+            chunks: Original chunks (for metadata)
+            collection_name: Collection name
+            document_id: Document ID
+
+        Returns:
+            List of VectorEmbeddings
+        """
+        # Parse JSONL results
+        results = []
+        for line in result_data.strip().split('\n'):
+            if line:
+                results.append(json.loads(line))
+
+        # Create mapping from custom_id to result
+        results_map = {}
+        for result in results:
+            custom_id = result.get('custom_id')
+            if result.get('response', {}).get('status_code') == 200:
+                embedding_data = result['response']['body']['data'][0]['embedding']
+                results_map[custom_id] = embedding_data
+            else:
+                error = result.get('error', {}).get('message', 'Unknown error')
+                self.logger.error(f"Error for {custom_id}: {error}")
+
+        # Create VectorEmbeddings
+        vector_embeddings = []
+        for idx, chunk in enumerate(chunks):
+            custom_id = f"chunk_{idx}_{chunk.chunk_id}"
+
+            if custom_id not in results_map:
+                self.logger.warning(f"No result found for chunk {chunk.chunk_id}, skipping")
+                continue
+
+            embedding_vector = results_map[custom_id]
+
+            vector_embedding = VectorEmbedding(
+                # Vector Data
+                embedding=embedding_vector,
+                embedding_model=self.model,
+                embedding_created_at=datetime.utcnow().isoformat(),
+
+                # Content Identity
+                chunk_id=chunk.chunk_id,
+                text=chunk.text,
+                text_hash=hashlib.sha256(chunk.text.encode('utf-8')).hexdigest(),
+                text_length=chunk.text_length,
+
+                # Hierarchical Context
+                path=chunk.path,
+                level=chunk.level,
+                parent_id=chunk.parent_id,
+                children_ids=chunk.children_ids.copy(),
+
+                # Source Tracking
+                source_file=chunk.source_file,
+                document_id=document_id,
+                collection_name=collection_name,
+
+                # Content Classification
+                content_type=chunk.content_type,
+                value_types=chunk.value_types.copy(),
+                key_count=chunk.key_count,
+
+                # Strategy & Quality
+                strategy=chunk.strategy,
+                confidence=chunk.confidence,
+                semantic_density=chunk.semantic_density,
+
+                # Additional metadata
+                domain_type="general",
+                entity_types=[],
+                performance_metrics=[],
+                reasoning_content=[],
+            )
+
+            vector_embeddings.append(vector_embedding)
+
+        self.logger.info(f"Created {len(vector_embeddings)} vector embeddings from batch results")
+        return vector_embeddings
 
     def get_embedding_info(self) -> Dict[str, Any]:
         """Get information about the embedding service configuration."""
