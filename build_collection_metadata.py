@@ -107,10 +107,18 @@ def build_metadata_table(namespace: str = 'default'):
     parsed_metadata = []
     parse_errors = []
 
+    # Namespace prefix to strip from dimensions
+    namespace_prefix = f"{namespace}_"
+
     for collection_name in collection_names:
         try:
             metadata = parse_collection_name(collection_name)
             metadata['collection_name'] = collection_name
+
+            # Strip namespace prefix from dimension
+            # Example: "revenue_mgmt_property" -> "property"
+            if metadata['dimension'].startswith(namespace_prefix):
+                metadata['dimension'] = metadata['dimension'][len(namespace_prefix):]
 
             # Get embedding count (single query)
             with db_conn.get_session() as session:
