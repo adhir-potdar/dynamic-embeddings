@@ -30,16 +30,24 @@ Automatically analyzes your JSON structure and selects the optimal chunking stra
 - Enables semantic similarity search
 - Supports collection and document management
 
-## 🔄 **Recent Updates (January 2026)**
+## 🔄 **Recent Updates**
 
-### Namespace Support (NEW!)
+### March 2026 - Performance & Metadata Enhancements
+- ✅ **Enhanced Collection Metadata** - Improved metadata tracking for faster collection discovery
+- ✅ **Optimized Search Performance** - Better result distribution across time periods and dimensions
+- ✅ **Database Utilities** - New tools for index management and cleanup operations
+- ✅ **Schema Improvements** - Enhanced metadata fields for richer query capabilities
+
+### January 2026 - Namespace Support
+
+#### Namespace Support (NEW!)
 - ✅ **Multi-Tenant Architecture** - Complete namespace isolation with separate physical tables
 - ✅ **Namespace Management** - Create, list, view stats, and delete namespaces
 - ✅ **Flexible Migration** - Migrate data between any namespaces (copy or move)
 - ✅ **Automatic Table Creation** - Namespaces created on first use
 - ✅ **CLI Tools Enhanced** - All tools support `--namespace` parameter
 
-### Production-Ready Enhancements
+#### Production-Ready Enhancements
 - ✅ **Automatic Document Replacement** - Re-process files without duplicate errors
 - ✅ **Extended Database Support** - Field lengths increased to 4096 characters for complex hierarchical paths
 - ✅ **Token-Aware Batching** - Intelligent OpenAI API usage with tiktoken integration
@@ -47,12 +55,13 @@ Automatically analyzes your JSON structure and selects the optimal chunking stra
 - ✅ **Cross-Collection Management** - Smart document replacement across collections
 - ✅ **Interactive Collection Selection** - Enhanced QA interface with per-query collection targeting
 
-### New Command-Line Tools
+#### New Command-Line Tools
 - 🆕 **Namespace Migration** - `migrate_namespace.py` for migrating data between namespaces
 - 🆕 **Namespace Management** - List, stats, and delete operations via CLI
 - 🆕 **Single File Processing** - `--file` option for individual JSON processing
 - 🆕 **Collection-Scoped Search** - Interactive QA now prompts for collection per query
 - 🆕 **Replacement Control** - `--no-replace` flag for strict duplicate prevention
+- 🆕 **Index Management** - Utilities for cleaning up orphaned indexes and patterns
 
 ## ⚡ Quick Start
 
