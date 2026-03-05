@@ -130,11 +130,21 @@ class DocumentProcessor:
             # Calculate quality metrics
             semantic_density = self.text_converter.calculate_semantic_density(chunk_data)
 
+            # Extract dimension value from path if present
+            chunk_path = chunk.metadata.source_path or f'root.{i}'
+            dimension_value = self._extract_dimension_value(chunk_path)
+
+            # Debug logging for dimension_value extraction
+            if 'dimension_analyses' in chunk_path and dimension_value:
+                self.logger.debug(f"✓ Extracted dimension_value='{dimension_value}' from path='{chunk_path}'")
+            elif 'dimension_analyses' in chunk_path and not dimension_value:
+                self.logger.warning(f"✗ Failed to extract dimension_value from path='{chunk_path}'")
+
             # Create embedding chunk
             embedding_chunk = EmbeddingChunk(
                 text=text,
                 chunk_id=chunk.metadata.chunk_id,
-                path=chunk.metadata.source_path or f'root.{i}',
+                path=chunk_path,
                 level=chunk.metadata.depth_level,
                 content_type=self._detect_content_type(chunk_data),
                 key_count=len(chunk_data) if isinstance(chunk_data, dict) else 0,
@@ -142,8 +152,13 @@ class DocumentProcessor:
                 strategy=strategy,
                 confidence=confidence,
                 semantic_density=semantic_density,
-                source_file=source_file
+                source_file=source_file,
+                dimension_value=dimension_value
             )
+
+            # Debug: Verify dimension_value was set correctly
+            if 'dimension_analyses' in chunk_path:
+                self.logger.debug(f"✓ EmbeddingChunk created with dimension_value='{embedding_chunk.dimension_value}' (passed: '{dimension_value}')")
 
             # Quality validation
             if self._validate_chunk_quality(embedding_chunk):
@@ -235,6 +250,42 @@ class DocumentProcessor:
                 types.append("other")
 
         return list(set(types))  # Remove duplicates
+
+    def _extract_dimension_value(self, path: str) -> Optional[str]:
+        """Extract dimension value from JSON path if present.
+
+        For reasoning analysis files, paths like 'dimension_analyses.APP.metrics_analysis'
+        contain dimension values (APP, AMP, DESK, etc.) that need to be extracted.
+
+        Args:
+            path: JSON path string (e.g., 'dimension_analyses.APP.metrics_analysis.Total Impressions')
+
+        Returns:
+            Dimension value if found in path after 'dimension_analyses', else None
+
+        Examples:
+            'dimension_analyses.APP.metrics_analysis' -> 'APP'
+            'dimension_analyses.AMP' -> 'AMP'
+            'analysis_metadata.period1' -> None
+        """
+        if not path or 'dimension_analyses' not in path:
+            return None
+
+        try:
+            parts = path.split('.')
+            # Find index of 'dimension_analyses'
+            if 'dimension_analyses' in parts:
+                idx = parts.index('dimension_analyses')
+                # The next element should be the dimension value
+                if idx + 1 < len(parts):
+                    dimension_value = parts[idx + 1]
+                    # Validate it's a reasonable dimension value (not empty, not a number)
+                    if dimension_value and not dimension_value.isdigit():
+                        return dimension_value
+        except Exception as e:
+            self.logger.debug(f"Failed to extract dimension from path '{path}': {e}")
+
+        return None
 
     def _validate_chunk_quality(self, chunk: EmbeddingChunk) -> bool:
         """Validate chunk meets quality thresholds."""

@@ -34,6 +34,7 @@ class EmbeddingChunk:
 
     # Source metadata
     source_file: Optional[str] = None  # Original file path
+    dimension_value: Optional[str] = None  # Extracted from dimension_analyses keys (APP, AMP, etc.)
     timestamp: str = ""                # Processing timestamp
 
     def __post_init__(self):

@@ -25,7 +25,8 @@ class CollectionMetadataService:
         dimension: str,
         time_granularity: Optional[str] = None,
         start_date: Optional[int] = None,
-        end_date: Optional[int] = None
+        end_date: Optional[int] = None,
+        dimension_values: Optional[List[str]] = None
     ) -> List[Dict]:
         """
         Find collections matching criteria.
@@ -35,6 +36,7 @@ class CollectionMetadataService:
             time_granularity: Time granularity filter (e.g., 'mom', 'qoq')
             start_date: Filter collections overlapping this start date (YYYYMMDD)
             end_date: Filter collections overlapping this end date (YYYYMMDD)
+            dimension_values: Filter collections containing these dimension values (e.g., ['APP', 'AMP'])
 
         Returns:
             List of matching collection metadata dicts
@@ -73,6 +75,23 @@ class CollectionMetadataService:
                     )
                 )
 
+            # Filter by dimension_values (if specified)
+            # Only include collections that contain at least one of the requested dimension values
+            if dimension_values:
+                # Use JSONB ?| operator to check if array overlaps with provided values
+                # The ?| operator expects a PostgreSQL text array on the right side
+                from sqlalchemy import cast, func
+                from sqlalchemy.dialects.postgresql import ARRAY
+                from sqlalchemy.types import String as SQLString
+
+                # Cast Python list to PostgreSQL ARRAY
+                # dimension_values ?| ARRAY['APP', 'AMP']::text[]
+                query = query.filter(
+                    self.MetadataModel.dimension_values.op('?|')(
+                        cast(dimension_values, ARRAY(SQLString))
+                    )
+                )
+
             # Execute query
             results = query.all()
 
@@ -82,6 +101,7 @@ class CollectionMetadataService:
                     'collection_name': r.collection_name,
                     'dimension': r.dimension,
                     'time_granularity': r.time_granularity,
+                    'dimension_values': r.dimension_values if hasattr(r, 'dimension_values') else None,
                     'period1_start_date': r.period1_start_date,
                     'period1_end_date': r.period1_end_date,
                     'period2_start_date': r.period2_start_date,

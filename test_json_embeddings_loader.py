@@ -129,10 +129,14 @@ def process_json_to_embeddings(json_path, collection_name, pipeline, replace_exi
 
         # Check if document already exists and delete if replace_existing is True
         if replace_existing:
-            # First, check if document exists in ANY collection and delete it
-            existing_count = pipeline.delete_document(document_id)  # Delete from all collections
-            if existing_count > 0:
-                logging.info(f"🔄 Replaced existing document: deleted {existing_count} embeddings for '{document_id}' from all collections")
+            try:
+                # First, check if document exists in ANY collection and delete it
+                existing_count = pipeline.delete_document(document_id)  # Delete from all collections
+                if existing_count > 0:
+                    logging.info(f"🔄 Replaced existing document: deleted {existing_count} embeddings for '{document_id}' from all collections")
+            except Exception as e:
+                # Table might not exist yet - that's okay, nothing to delete
+                logging.debug(f"Could not delete existing document (table may not exist yet): {e}")
 
         # Process JSON data
         logging.info(f"Processing JSON data for document: {document_id}")

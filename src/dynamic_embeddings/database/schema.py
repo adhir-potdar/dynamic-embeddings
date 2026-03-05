@@ -1,5 +1,6 @@
 """Database schema for PGVector embeddings storage."""
 
+import warnings
 from sqlalchemy import (
     Column, Integer, String, Text, REAL, TIMESTAMP, BOOLEAN, JSON,
     Index, UniqueConstraint, create_engine, text, Table, MetaData
@@ -12,6 +13,10 @@ import logging
 import threading
 import re
 from typing import Optional, Dict, Type, Any
+
+# Suppress SQLAlchemy warning about duplicate model registration
+# This is expected behavior when using dynamic namespace-based models with caching
+warnings.filterwarnings('ignore', message='.*declarative base already contains a class.*', category=Warning)
 
 Base = declarative_base()
 
@@ -63,6 +68,7 @@ class EmbeddingRecord(Base):
     domain_type = Column(String(100))
     entity_types = Column(JSONB)
     performance_metrics = Column(JSONB)
+    dimension_value = Column(String(1024), index=True)  # Extracted from dimension_analyses keys (APP, AMP, etc.)
     reasoning_content = Column(JSONB)
 
     # Technical Metadata
@@ -86,6 +92,7 @@ class EmbeddingRecord(Base):
         Index('ix_embeddings_path', 'path'),
         Index('ix_embeddings_collection', 'collection_name'),
         Index('ix_embeddings_level', 'level'),
+        Index('ix_embeddings_dimension_value', 'dimension_value'),
         Index('ix_embeddings_created', 'created_at'),
     )
 
@@ -134,6 +141,7 @@ def get_collection_metadata_model(namespace: str = 'default'):
             # Parsed components from collection name
             'dimension': Column(String(100), nullable=False, index=True),
             'time_granularity': Column(String(10), nullable=False, index=True),
+            'dimension_values': Column(JSONB),  # Array of dimension values in this collection (e.g., ['APP', 'AMP', 'DESK'])
 
             # Date ranges (YYYYMMDD format as integers for efficient range queries)
             'period1_start_date': Column(Integer, nullable=False, index=True),
@@ -311,6 +319,7 @@ class NamespaceTableFactory:
                 Column('domain_type', String(100)),
                 Column('entity_types', JSONB),
                 Column('performance_metrics', JSONB),
+                Column('dimension_value', String(1024), index=True),  # Extracted from dimension_analyses keys
                 Column('reasoning_content', JSONB),
 
                 # Technical Metadata
@@ -328,6 +337,7 @@ class NamespaceTableFactory:
                 Index(f'ix_{table_name}_path', 'path'),
                 Index(f'ix_{table_name}_collection', 'collection_name'),
                 Index(f'ix_{table_name}_level', 'level'),
+                Index(f'ix_{table_name}_dimension_value', 'dimension_value'),
                 Index(f'ix_{table_name}_created', 'created_at'),
 
                 extend_existing=True
@@ -403,16 +413,38 @@ class EmbeddingSchema:
 
             # Get or create the model for this namespace
             model = self.table_factory.get_or_create_model(namespace)
+            table_name = self.table_factory.get_table_name(namespace)
+
+            # FIRST: Check if table exists
+            with self.engine.connect() as conn:
+                table_exists = conn.execute(text(
+                    "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = :table_name)"
+                ), {"table_name": table_name}).scalar()
+
+                if table_exists:
+                    self.logger.info(f"Table '{table_name}' already exists")
+                    # Still try to create indexes in case they're missing
+                    self._create_vector_indexes(namespace)
+                    return
 
             # Create the table with IF NOT EXISTS logic
             try:
-                model.__table__.create(self.engine, checkfirst=True)
+                model.__table__.create(self.engine, checkfirst=False)  # Don't check first, just try to create
                 self.logger.info(f"Table created for namespace '{namespace}'")
             except Exception as table_err:
-                # Check if error is due to existing constraints/indexes (safe to ignore)
+                # Check if error is due to existing constraints/indexes
                 error_msg = str(table_err).lower()
                 if 'already exists' in error_msg or 'duplicate' in error_msg:
-                    self.logger.warning(f"Table or constraints already exist for namespace '{namespace}', continuing...")
+                    self.logger.warning(f"Got 'already exists' error: {table_err}")
+                    self.logger.warning(f"Attempting to work around by clearing metadata cache...")
+
+                    # Clear metadata cache
+                    if table_name in Base.metadata.tables:
+                        Base.metadata.remove(Base.metadata.tables[table_name])
+                    self.table_factory.clear_cache()
+
+                    # Use raw SQL to create table with IF NOT EXISTS
+                    self._create_table_with_raw_sql(namespace)
                 else:
                     # Re-raise if it's a different error
                     raise
@@ -424,6 +456,83 @@ class EmbeddingSchema:
 
         except Exception as e:
             self.logger.error(f"Failed to create database schema for namespace '{namespace}': {e}")
+            raise
+
+    def _create_table_with_raw_sql(self, namespace: str = "default") -> None:
+        """Create table using raw SQL with IF NOT EXISTS.
+
+        This bypasses SQLAlchemy metadata cache issues.
+
+        Args:
+            namespace: Namespace for table creation
+        """
+        namespace = namespace.lower()
+        table_name = self.table_factory.get_table_name(namespace)
+
+        self.logger.info(f"Creating table '{table_name}' using raw SQL...")
+
+        create_table_sql = f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            id SERIAL PRIMARY KEY,
+            embedding vector(1536),
+            embedding_model VARCHAR(100) NOT NULL,
+            embedding_created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+            chunk_id VARCHAR(4096) UNIQUE NOT NULL,
+            text TEXT NOT NULL,
+            text_hash VARCHAR(64) UNIQUE NOT NULL,
+            text_length INTEGER,
+            path TEXT,
+            level INTEGER,
+            parent_id VARCHAR(4096),
+            children_ids JSONB,
+            source_file TEXT,
+            document_id VARCHAR(4096),
+            collection_name VARCHAR(100),
+            content_type VARCHAR(50),
+            value_types JSONB,
+            key_count INTEGER,
+            strategy VARCHAR(50),
+            confidence REAL,
+            semantic_density REAL,
+            domain_type VARCHAR(100),
+            entity_types JSONB,
+            performance_metrics JSONB,
+            dimension_value VARCHAR(1024),
+            reasoning_content JSONB,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            version VARCHAR(20) DEFAULT '1.0',
+            processing_pipeline VARCHAR(50) DEFAULT 'vector_embeddings',
+            CONSTRAINT uq_{table_name}_chunk_id UNIQUE (chunk_id),
+            CONSTRAINT uq_{table_name}_text_hash_document UNIQUE (text_hash, document_id)
+        );
+        """
+
+        # Create indexes with IF NOT EXISTS
+        create_indexes_sql = f"""
+        CREATE INDEX IF NOT EXISTS ix_{table_name}_source_file_document_id ON {table_name}(source_file, document_id);
+        CREATE INDEX IF NOT EXISTS ix_{table_name}_strategy_confidence ON {table_name}(strategy, confidence);
+        CREATE INDEX IF NOT EXISTS ix_{table_name}_content_type_domain_type ON {table_name}(content_type, domain_type);
+        CREATE INDEX IF NOT EXISTS ix_{table_name}_path ON {table_name}(path);
+        CREATE INDEX IF NOT EXISTS ix_{table_name}_collection ON {table_name}(collection_name);
+        CREATE INDEX IF NOT EXISTS ix_{table_name}_level ON {table_name}(level);
+        CREATE INDEX IF NOT EXISTS ix_{table_name}_dimension_value ON {table_name}(dimension_value);
+        CREATE INDEX IF NOT EXISTS ix_{table_name}_created ON {table_name}(created_at);
+        """
+
+        try:
+            with self.engine.connect() as conn:
+                # Create table
+                conn.execute(text(create_table_sql))
+                self.logger.info(f"Table '{table_name}' created with raw SQL")
+
+                # Create indexes
+                conn.execute(text(create_indexes_sql))
+                self.logger.info(f"Indexes created for '{table_name}'")
+
+                conn.commit()
+        except Exception as e:
+            self.logger.error(f"Failed to create table with raw SQL: {e}")
             raise
 
     def _create_vector_indexes(self, namespace: str = "default") -> None:

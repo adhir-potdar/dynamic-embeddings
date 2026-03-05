@@ -41,6 +41,7 @@ class VectorEmbedding:
 
     # Source Tracking
     source_file: Optional[str] = None
+    dimension_value: Optional[str] = None  # Extracted from dimension_analyses keys
     document_id: str = "document"
     collection_name: str = "default"
 
@@ -363,6 +364,10 @@ class EmbeddingService:
         # Generate embedding for the chunk text
         embedding_vector = self.generate_embedding(chunk.text)
 
+        # Debug: Print dimension_value before creating VectorEmbedding
+        if 'dimension_analyses' in chunk.path:
+            print(f"🔍 chunk.path='{chunk.path}' | chunk.dimension_value='{getattr(chunk, 'dimension_value', None)}'")
+
         # Create VectorEmbedding with comprehensive metadata
         vector_embedding = VectorEmbedding(
             # Vector Data
@@ -384,6 +389,7 @@ class EmbeddingService:
 
             # Source Tracking
             source_file=chunk.source_file,
+            dimension_value=chunk.dimension_value,
             document_id=document_id,
             collection_name=collection_name,
 
@@ -457,6 +463,10 @@ class EmbeddingService:
         # Create VectorEmbedding objects
         vector_embeddings = []
         for chunk, embedding_vector in zip(valid_chunks, embedding_vectors):
+            # Debug logging for dimension_value
+            if 'dimension_analyses' in chunk.path:
+                print(f"🟢 EMBED_CHUNKS: path='{chunk.path}' | chunk.dimension_value='{chunk.dimension_value}'")
+
             vector_embedding = VectorEmbedding(
                 # Vector Data
                 embedding=embedding_vector,
@@ -477,6 +487,7 @@ class EmbeddingService:
 
                 # Source Tracking
                 source_file=chunk.source_file,
+                dimension_value=chunk.dimension_value,
                 document_id=document_id,
                 collection_name=collection_name,
 
@@ -588,6 +599,7 @@ class EmbeddingService:
 
                     # Source Tracking
                     source_file=chunk.source_file,
+                    dimension_value=chunk.dimension_value,
                     document_id=document_id,
                     collection_name=collection_name,
 
@@ -856,6 +868,10 @@ class EmbeddingService:
 
             embedding_vector = results_map[custom_id]
 
+            # Debug: Check chunk.dimension_value before creating VectorEmbedding
+            if 'dimension_analyses' in chunk.path:
+                print(f"🔍 BATCH: path='{chunk.path}' | chunk.dimension_value='{chunk.dimension_value}'")
+
             vector_embedding = VectorEmbedding(
                 # Vector Data
                 embedding=embedding_vector,
@@ -876,6 +892,7 @@ class EmbeddingService:
 
                 # Source Tracking
                 source_file=chunk.source_file,
+                dimension_value=chunk.dimension_value,
                 document_id=document_id,
                 collection_name=collection_name,
 

@@ -68,6 +68,7 @@ class VectorStore:
 
                     # Source Tracking
                     source_file=vector_embedding.source_file,
+                    dimension_value=vector_embedding.dimension_value,
                     document_id=vector_embedding.document_id,
                     collection_name=vector_embedding.collection_name,
 
@@ -149,6 +150,7 @@ class VectorStore:
 
                         # Source Tracking
                         source_file=embedding.source_file,
+                        dimension_value=embedding.dimension_value,
                         document_id=embedding.document_id,
                         collection_name=embedding.collection_name,
 
@@ -261,7 +263,8 @@ class VectorStore:
                         'semantic_density': record.semantic_density,
                         'created_at': record.created_at,
                         'path': record.path,
-                        'level': record.level
+                        'level': record.level,
+                        'dimension_value': record.dimension_value
                     })()
                     detached_results.append((detached_record, similarity_score))
 

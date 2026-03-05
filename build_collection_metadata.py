@@ -90,6 +90,9 @@ def build_metadata_table(namespace: str = 'default'):
     db_conn = DatabaseConnection()
     vector_store = VectorStore(db_conn)
 
+    # Clear model cache to ensure we get the latest schema
+    vector_store.table_factory.clear_cache()
+
     # Step 1: Get all collections (lightweight - only names)
     print("\n📋 Fetching collection names...")
 
@@ -120,12 +123,42 @@ def build_metadata_table(namespace: str = 'default'):
             if metadata['dimension'].startswith(namespace_prefix):
                 metadata['dimension'] = metadata['dimension'][len(namespace_prefix):]
 
-            # Get embedding count (single query)
+            # Get embedding count and dimension values (single query)
             with db_conn.get_session() as session:
                 count = session.query(RecordModel).filter(
                     RecordModel.collection_name == collection_name
                 ).count()
                 metadata['total_embeddings'] = count
+
+                # Extract distinct dimension_values from this collection
+                # Check if dimension_value attribute exists (may not be present in cached models)
+                if hasattr(RecordModel, 'dimension_value'):
+                    dimension_values_query = session.query(
+                        RecordModel.dimension_value
+                    ).filter(
+                        RecordModel.collection_name == collection_name,
+                        RecordModel.dimension_value.isnot(None)
+                    ).distinct().all()
+
+                    # Convert to list, filtering out None values
+                    dimension_values = [dv[0] for dv in dimension_values_query if dv[0]]
+                    metadata['dimension_values'] = dimension_values if dimension_values else None
+                else:
+                    # If dimension_value column doesn't exist in model, use raw SQL
+                    from sqlalchemy import text
+                    try:
+                        dimension_values_query = session.execute(text(f"""
+                            SELECT DISTINCT dimension_value
+                            FROM embeddings_{namespace}
+                            WHERE collection_name = :collection_name
+                            AND dimension_value IS NOT NULL
+                        """), {"collection_name": collection_name}).fetchall()
+                        dimension_values = [dv[0] for dv in dimension_values_query if dv[0]]
+                        metadata['dimension_values'] = dimension_values if dimension_values else None
+                    except Exception as e:
+                        # Column might not exist in database either
+                        print(f"   ⚠️  Could not fetch dimension_values: {e}")
+                        metadata['dimension_values'] = None
 
             metadata['last_updated_at'] = datetime.utcnow()
             parsed_metadata.append(metadata)
@@ -147,21 +180,27 @@ def build_metadata_table(namespace: str = 'default'):
         session.execute(text(f"DELETE FROM {table_name}"))
 
         # Bulk insert new metadata
-        session.execute(
-            text(f"""
-                INSERT INTO {table_name}
-                (collection_name, dimension, time_granularity,
-                 period1_start_date, period1_end_date,
-                 period2_start_date, period2_end_date,
-                 total_embeddings, last_updated_at)
-                VALUES
-                (:collection_name, :dimension, :time_granularity,
-                 :period1_start_date, :period1_end_date,
-                 :period2_start_date, :period2_end_date,
-                 :total_embeddings, :last_updated_at)
-            """),
-            parsed_metadata
-        )
+        # Convert dimension_values to JSON string for JSONB column
+        import json
+        for metadata in parsed_metadata:
+            if metadata.get('dimension_values'):
+                metadata['dimension_values'] = json.dumps(metadata['dimension_values'])
+
+        # Insert using bindparam style for bulk insert
+        stmt = text(f"""
+            INSERT INTO {table_name}
+            (collection_name, dimension, time_granularity, dimension_values,
+             period1_start_date, period1_end_date,
+             period2_start_date, period2_end_date,
+             total_embeddings, last_updated_at)
+            VALUES
+            (:collection_name, :dimension, :time_granularity, CAST(:dimension_values AS JSONB),
+             :period1_start_date, :period1_end_date,
+             :period2_start_date, :period2_end_date,
+             :total_embeddings, :last_updated_at)
+        """)
+
+        session.execute(stmt, parsed_metadata)
 
         session.commit()
 

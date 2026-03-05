@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS ${TABLE_NAME} (
     collection_name VARCHAR(200) PRIMARY KEY,
     dimension VARCHAR(100) NOT NULL,
     time_granularity VARCHAR(10) NOT NULL,
+    dimension_values JSONB,
     period1_start_date INTEGER NOT NULL,
     period1_end_date INTEGER NOT NULL,
     period2_start_date INTEGER NOT NULL,

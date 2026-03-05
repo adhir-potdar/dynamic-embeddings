@@ -12,7 +12,7 @@ import argparse
 import sys
 from sqlalchemy import create_engine, text, inspect
 from dynamic_embeddings.database.connection import DatabaseConnection
-from dynamic_embeddings.database.schema import get_collection_metadata_model, Base
+from dynamic_embeddings.database.schema import get_collection_metadata_model, Base, _collection_metadata_models
 
 
 def create_metadata_table(namespace: str):
@@ -28,7 +28,15 @@ def create_metadata_table(namespace: str):
         # Initialize database connection
         db_conn = DatabaseConnection()
 
-        # Get the metadata model for this namespace
+        # Clear any existing table definition from metadata cache
+        if table_name in Base.metadata.tables:
+            Base.metadata.remove(Base.metadata.tables[table_name])
+
+        # Clear the global model cache to force fresh model creation
+        if namespace in _collection_metadata_models:
+            del _collection_metadata_models[namespace]
+
+        # Get the metadata model for this namespace (fresh model)
         MetadataModel = get_collection_metadata_model(namespace)
 
         # Create table using SQLAlchemy
@@ -42,6 +50,27 @@ def create_metadata_table(namespace: str):
             )
 
         print(f"   ✅ Table created successfully")
+
+        # Ensure dimension_values column exists (in case of Python module caching issues)
+        print(f"\n   ℹ️  Ensuring dimension_values column exists...")
+        with db_conn.get_session() as session:
+            # Check if column exists
+            result = session.execute(text("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = :table_name AND column_name = 'dimension_values'
+            """), {"table_name": table_name}).fetchone()
+
+            if not result:
+                print(f"   ⚠️  Column 'dimension_values' not found, adding it...")
+                session.execute(text(f"""
+                    ALTER TABLE {table_name}
+                    ADD COLUMN dimension_values JSONB
+                """))
+                session.commit()
+                print(f"   ✅ Column 'dimension_values' added")
+            else:
+                print(f"   ✅ Column 'dimension_values' exists")
 
         # Verify table exists
         print(f"\n   ℹ️  Verifying table...")
